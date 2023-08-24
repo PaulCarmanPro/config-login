@@ -1,0 +1,422 @@
+#!/usr/bin/bash
+#
+# ~/.bash_login -- perform system test
+#
+# do NOT use exit or user will be logged out !!!
+# applies to .bashrc, too due to use of include !!!
+#
+
+# find a font size providing at least 80 columns
+if [ linux = "$TERM" ]; then # setfont requires VGA text console
+	# this sort does not numerical sort correctly!
+	zFonts=$(find /usr/share/consolefonts/ -name 'Arabic-VGA*' | sort -rV)
+	for zFont in $zFonts; do
+		setfont "$zFont"
+		[[ 80 -lt "$(tput cols)" ]] && break
+	done
+fi
+
+# use tmux instead of xterm
+# !!! does NOT allow startx !!!
+#if [[ -z "$DISPLAY" ]] \
+#      && [[ -z "$TMUX" ]] \
+#      && hash tmux 2>/dev/null; then
+#  : exec tmux new-session # $TERM will be tmux-*
+#fi
+
+umask 002 # octal ugo bits rwx 024 disallow others to write to newly created files
+
+g0Dir=$(realpath -- "$(dirname -- "${BASH_SOURCE[0]}")")
+[[ 0 = "$(id --user)" ]] && gUser=$(grep ":$PWD:" /etc/passwd | cut  -d: -f1)
+[[ "$gUser" ]] || gUser=$(logname) # might not work
+[[ "$gUser" ]] || gUser="$USER" # fallback
+gHome=$(grep "^$gUser:" /etc/passwd | cut -d: -f6) # more reliable than $HOME
+[[ "$gHome" ]] || gHome="$HOME" # fallback
+export g0Dir gHome gUser
+
+# include function declarations to clean self
+# shellcheck source=./.bash_login.check
+. "$g0Dir/.bash_login.check"
+
+CheckGroups <<-EOF
+	sys adm allows general computer administration
+	sys audio allows sound administration
+	sys bluetooth allows bluetooth access via dbus as defined in /etc/dbus-1/system.d/bluetooth.conf
+	sys crontab allows ctrontab editing (/var/spool/cron/crontabs/ /usr/bin/crontab)
+   # sys disk disk drives belong to this group (see lsblk -o GROUP)
+   # sys floppy floppy drives belong to this group (see lsblk -o GROUP)
+	# sys games grants access to score files
+	sys lp allows printer enabling and use
+	sys lpadmin allows printer administration (/usr/share/ppd/custom/)
+	sys mail allows command line ssmtp
+	sys netdev allows network administration (/dev/rfkill)
+   sys plugdev claims to allow usbboot to mount the compute module in USB mode, but sudo still required
+	sys scanner allows scanner enabling and use
+	sys staff allows access to /usr/local (/usr/share/fonts/)
+	sys sudo allows sudo
+	sys systemd-journal allows journalctl (/run/log/journal/ /var/log/journal/)
+   s users allows standard mounting options
+	sys video allows video administration (/dev/fb0 /dev/dri/card0)
+	# song genre usually by artist
+   3000 Think music non-thinkers tend to dislike
+	3001 Fire music meant to sexually excite
+	3002 Joy music meant to make happy
+	3003 Musac music lacking words
+   3004 Voice music of vocality
+   3005 Cry music of misery
+   3006 Yoga relaxing music
+	# initial thinking
+	5000 us marks files for use among all users (group users is longer)
+	5001 keep marks files used for direct recovery or user link
+	5002 kept marks files used for indirect recovery
+	5003 mine marks files for private backup
+	5004 hist marks history files (never backup spy)
+	5005 back marks files that are backup files
+	EOF
+
+zSize=$(lsblk -bo MOUNTPOINT,SIZE | sed -nE 's|^/[[:space:]]+||p')
+# android
+# arm=arm required
+# blue=bluetooth
+# cup=cups
+# emacs
+# ex=experimental
+# hg=huge
+# ios=ios
+# java
+# lg=large
+# md=medium
+# mutt
+# old=old/depreciated
+# pi=raspberry pi required
+# pic=pictures
+# pipe=pipewire
+# pulse=pulseaudio/alsa
+# py=python
+# sm=small (needed for compute module)
+# wayland
+# wifi
+# x11
+# x86=amd processor
+
+zMust= # package entry must contain
+zMustNot=android:blue:hg:ios:lg:old:wifi:ex # package entry must not contain
+if [[ "$(uname -m)" = x86_64 ]]; then
+   zMustNot=$zMustNot${zMustNot:+:}arm:pi
+else
+   zMustNot=$zMustNot${zMustNot:+:}x86
+   if [[ 10000000000 -gt "$zSize" ]]; then
+      # small install for compute module
+      zMust=$zMust${zMust:+:}sm
+   fi
+fi
+
+CheckApt # packages may be non-free
+DoUntilKeypress "Checking packages" \
+                CheckPackages "$zMust" "$zMustNot" <<-EOF
+	# APTWARE
+   apt-listbugs :ex: # assist in experimental
+   apt-listchanges :ex: # assist in knowing modifications
+   apt-file :: # search for file in packages
+
+	# BUSWARE
+   dconf-gsettings-backend :ex: # gsettings can expand evince cache
+   inxi :: # list hardware/os information
+   strace :: # system call tracer/logger
+
+	# CODEWARE
+   default-jre :java: # Java Runtime Environment (wanted by libreoffice)
+   dialog :ex: # shell script dialog boxes
+   fakeroot :ex: # allows user package building
+   fzf :ex: # command line fuzzy find # never successfully installed
+   gdb :ex: # gnu debugger (does not handle bash or python)
+   git-all :: # version control system
+   git-credential-oauth # git-credential-manager
+   gnucobol :ex: # many COBOL dialects -- trying to use COBOL 2014
+   mypy :py: # pip # python linter
+   perl-doc :ex:perl: # perl comes with install
+	python3-colorama :ex:py: # python console color module
+   python3-pip :ex:py: # python module installer
+   python3-panwid :ex:py: # pip # urwid # console user interface widgets
+   # pip install pyudev :ex: # type checker
+   # pip install Xlib :ex: # X11 library
+   shellcheck :sm: # bash linting
+   terminator :sm: # terminal (better than tilda)
+   virtualenv :py: # needed for python jedi-mode flyspell
+   yad :ex: # Yet Another Dialog (fehRename) @see http://smokey01.com/yad/
+
+   # CONSOLEWARE
+   tmux :sm: # better than screen (Ctrl-B/scroll in console mode)
+
+	# EDITWARE
+   csvkit :ex:py: # csv database toolset (CLI via Python)
+   docx2txt :sm: # convert microsoft word to text
+   enscript :sm: # wraps plain text for printing
+   gawk :sm: # text processor
+   /8/emacs.KEEP :sm: # editor macros text editor - compilation links help to source # news: emacs-gtk 28.? doesn't work
+   libgpm2 :sm: # required to execute emacs
+   libreoffice-calc :libre: # spreadsheet (huge)
+   libreoffice-gtk3 :libre: # libreoffice gtk integration
+   libreoffice-java-common :libre: # libreoffice wants java
+   texlive-base :md:lateex: # LaTeX packages (huge)
+   texlive :lg:lateex: # LaTeX packages (enormous) (texlive-base lacks pdflatex)
+   texlive-full :hg:lateex: # LaTeX packages (gargantuan) (texlive lacks wanted sty files) -- commented for pi
+   pandoc :: # handle markdown files # pandoc FILE.md | lynx -stdin
+
+	# FILEWARE
+   /8/rpi-clone.KEEP :sm:pi: # bootable raspberry pi flash clone
+   dosfstools :sm: # vfat utilities including mkfs.fat fsck.fat
+   extundelete :ex: # file undeleter (advanced usage incompatible)
+   fdupes :sm: # duplicate file finder
+   gvfs-fuse :old:ios: # for ios fuse
+   fuse3 :ex: # filesystem in user space # watch that version number
+   gparted :sm: # gnu disk partitioner
+   ifuse :ios: # ios device mounter # probably all that is needed
+   jmtpfs :android: # join media transfer protocol file system android
+   libimobiledevice6 :old:ios: # utilities for ios
+   libimobiledevice-utils :old:ios: # multiplexer or ios
+   mtools :sm: # wanted by gparted to read FAT32
+   rename :sm: # regex file renaming
+   rsync :sm: # just cant get rid of it (yet--cp d)
+   ssh :ssh: # ssh USER@IP|HOSTNAME.local # secure shell (client+server)
+   sshfs :ssh: # secure shell file system (mount) and sftp secure file system transfer protocol
+   ssh-tools :ex:ssh: # ssh diagnostic tools
+	ssh-tools :ex:ssh: # ssh-ping: check if host is reachable using ssh_config
+	ssh-tools :ex:ssh: # ssh-version: shows version of the SSH server you are connecting to
+	ssh-tools :ex:ssh: # ssh-diff: diff a file over SSH
+	ssh-tools :ex:ssh: # ssh-facts: get some facts about the remote system
+	ssh-tools :ex:ssh: # ssh-hostkeys: prints server host keys in several formats
+	ssh-tools :ex:ssh: # ssh-keyinfo: prints keys in several formats
+	ssh-tools :ex:ssh: # ssh-certinfo: shows validity and information of SSH certificates
+   tune2fs :ex: # change volume label via $ tune2fs -L LABEL DEVICE
+   unzip :sm: # unzip basic zip files
+   vmtouch :ex: # manual control filesystem cache
+
+	# FIRMWARE
+	# /etc/bluetooth/main.conf # bluetooth configuration
+	# intel bluetooth does not support new linux kernel yet
+   bluetooth :blue: # metapackage getting bluez (should not be needed)
+   bluez :ex:blue: # bluetooth hciconfig hcitool atttool
+   bluez-obexd :ex:blue: # bluetooth object exchange
+   bluez-tools :ex:blue: # provides command line adapter, agent, sound, input, network and other control.
+   firmware-iwlwifi :ex:wifi: # non-free # driver for ASRock/intel 3160 wifi
+   firmware-misc-nonfree :ex:wifi: # non-free # solve i915/skl_dmc (skylake) boot message -- freezes video play?
+   firmware-realtek :ex:wifi: # non-free # driver (Intel bluetooth rt18168g # TPLink TL-WN821N USB rtl8192)
+   r8168-dkms :ex:wifi: # non-free # might improve the Realtek PCIE r8169 Ethernet card
+   rfkill :sm: # examine/change the status of transmission devices
+
+   # GAMEWARE
+   minetest :game:
+
+	# INFOWARE
+   aspell :sm: # spelling checker used by emacs flyspell and my dict
+   bsdmainutils :sm: # useful cal ncal
+   /8/dict-bouvier_6.revised-3.3_all.deb :sm: # John Bouvier's Law Dictionary for the USA (unkept)
+   dict :sm: # dictionary/thesaurus
+   dict-devil :sm: # "The Devil's Dictionary" by Ambrose Bierce
+   dict-elements :sm: # Data regarding the Elements
+   dict-foldoc :sm: # Free OnLine Dictionary Of Computing
+   dict-gcide :sm: # Comprehensive English Dictionary
+   dict-jargon :sm: # The Jargon Lexicon
+   /8/dict-moby-thesaurus_1.0-6.4_all.deb :sm: # Largest and most comprehensive thesaurus (copyrighted)
+   dict-vera :sm: # Computer Related Acronyms
+   dict-wn :sm: # WordNet Lexical database of English language
+   dictionaries-common :ex:sm: # included # spelling dictionaries # common utilities
+   elpa-pkg-info :ex:emacs: # non-free emacs info files
+   htop :sm: # top with scrolling & more # pcp htop allows arbitrary metrics
+   info :sm: # documentation information
+   iotop :sm: # input/output monifor
+   iamerican :ex: # ispell american dictionary
+   ispell :ex: # spelling checker
+   pcp :ex: # Performance Co-Pilot # framework supporting performance monitoring and management 
+   units :sm: # a calculator
+
+	# IMAGEWARE
+   dcraw :jpg: # Decode Raw image formats
+   eog :ex:jpg: # Eye Of Gnome image viewer respects image mod tags
+   feh :sm:jpg: # fast image viewer ignores image mod tags
+   gimp :jpg: # GNU image Manipulation Program
+   gimp-help-en :jpg: # help via gimp menu
+   gpick # gtk color picker
+   heif-gdk-pixbuf :jpg: # display heic images (apple)
+   imagemagick :jpg: # $ identify & $ convert image editor
+   libsane :ex:scan: # Scanner Access Now Easy
+   netpbm :jpg: # package of graphics manipulation programs and libraries
+   /8/imlib2-heic.KEEP :ex:jpg: # allows feh to comprehend HEIC images
+
+	# MAILWARE
+   abook :ex:mutt: # mutt address book
+   pass :ex:mutt: # gnupg # gpg # mutt Gnu Privacy Guard conforming to OpenPGP
+   isync :ex:mutt: # mutt imap mail synchronizer
+   lynx :: # mutt/pandoc text mode web browser to display html
+   neomutt :ex:mutt: # text based mail user agent
+   notmuch :ex:mutt: # mutt email indexer
+   mpack :ex:mutt: # munpack email.eml to extract inclusions and embedded images
+   msmtp :ex:mutt: # mutt minimalist Simple Mail Transfer Protocol client
+   recoil :ex:mutt: # mutt email searcher
+   thunderbird :sm: # email client (hope to replace with mutt/emacs/feh/firefox/isync/pass/msmtp)
+   urlview :ex:mutt: # mutt # extract URL from text files and mail messages
+
+	# NETWARE
+   bind9 :ex: # named via Berkeley Internet Named Domain server via port 53
+   bind9utils :ex: # rndc via Remote Named Deamon Controller via port 953
+   bind9-doc :ex: # Berkeley Internet Named Domain server
+   bridge-utils :ex: # ethernet bridging via brctl (??? not used ???)
+   curl :ex: # transfers data to/from server the mac way
+   dhclient :ex: # used for network control # came with debian # unaware of package name
+   deluge :: # bit torrent
+   dnsmasq :ex: # DNS forwarder and DHCP server for NAT
+   dnstracer :ex: # use to easily determine DNS nameserver which is in use
+   jami :ex: # video conferencing
+   firefox-esr :sm: # stable web browser
+   /8/google-earth-pro-stable_current_amd64.deb:x86: 
+   iftop :sm: # interface monitor
+   iotop :sm: # disk io monitor
+   iwd :ex:wifi: # simple iNet Wireless/WiFi Daemon via iwctl (preferred)
+   net-tools # netstat
+   nmap :: #  nmap -sn 192.168.1.0/24 # relatively quickly map the network
+	# sudo nmap -sO -oG nmap.f --reason --osscan-limit --open 192.168.1.0/24 # scan ports
+   resolvconf :ex: # DNS information manager (resolvconf.service) # now using systemd instead?
+   rtorrent :ex: # ncurses bit torrent client (@see deluge)
+   qbittorrect :ex: # quicktime bit torrect
+   shairport-sync :ex: # wifi music
+   wireshark :ex: # capture USB data
+   openvpn :ex: # debian virtual private network
+   pptp-linux :ex: # point-to-point protocol
+
+	# PIWARE
+   quicktime-utils :ex:pi: # needed for rpi-imager and to play Windows/Mac movies
+   # apt-get --fix-borken to fix qt issues 
+   /8/rpi-imager_1.7.2_amd64.deb :pi: # raspberry pi OS disk imager (package will be called rpi-imager)
+   # rpi-imager :pi: # raspberry pi os installer # package availabe directly only on pi (manual advantage?)
+   raspi-gpio :ex:pi: # GPIO tool # raspi-gpio help
+   python-gpiozero :ex:pi: # import gpiozero (uses RPi.GPIO and pigpio)
+
+	# PRINTWARE
+   cups :cup: # common unix printing system (soon to be replaced with ipp)
+	cups-ipp-utils :ex:cup: # use ippserver instead of cups
+	# lpadmin # add, modify, or delete destinations (printers)
+	# lpinfo # list printer drivers (filters) and backends (printer communicators)
+	# lpinfo -p EPSON_ET-4800_Series "EPSON ET-4800 Series" "Box Therapy" # add the printer
+ 	# cupsctl # manage the printing system as a whole
+	# http:\localhost:631 (admin) # local web interface
+   evince :pdf: # able to copy text from a pdf
+   ipp-usb :ex:ipp: # print via ipp to usb printer # not needed for USB?
+   /8/brother/linux-brprinter-installer-2.2.3-1:ex: 
+   mupdf :pdf: # pdf viewer (much faster than evince)
+   page-crunch :ex:pdf: # pdf manipulator via psnup, psbook, pdftops, ps2pdf
+   plakativ :pdf: # print/enlarge pdf across multiple sheets
+   pdftk :pdf: # pdf tool kit
+   skanlite :ex:scan: # scan tool ?
+
+	# SOUNDWARE/CDWARE/DVDWARE
+   abcde :aud: # a better cd encoder/ripper
+   alsa-utils :old:pulse: # included # Advanced Linux Sound Architecture management and speaker-test
+   audacity :aud: # gui audio editor
+   easyeffects :aud: # pipewire/gtk4 sound effects
+   libttspico-utils :ex:aud: # pico2wave speech synthesizer
+   libspa-0.2-bluetooth :blue:pipewire: # pipewire bluetooth
+   normalize-audio :aud: # mp3 audio volume normalizer (only created a binary tag)
+   mp3gain :aud: # mp3 audio normalizer that changes the actual song
+   pavucontrol :aud:pulse: # pulse audio controller # works with pipewire
+   pipewire :pipewire: # replace jack and pulseaudio using only a small portion of ALSA
+   pipewire-audio-client-libraries :ex:pipewire: 
+   pulseaudio-module-bluetooth :blue:pulse: # pulse bluetooth
+   pulseaudio :old:pulse: # sound server # pulseaudio -k; sudo /etc/init.d/alsa-utils restart; pulseaudio -D
+   pulseaudio-equalizer :old:pulse: # qpaeq requires special default.pa -- @see pulseaudio -vvvv
+   swh-plugins :old:pulse: # pulseaudio-equalizer dependency?
+   ladspa-sdk :old:pulse: # pulseaudio-equalizer dependency?
+   pulseaudio-module-zeroconf :x:pulse: # publish sinks and sources via avahi and mdns (may need avahi and mdns)
+   spek :old: # audio spectrum analyzer
+
+	# VIDEOWARE
+   aegisub :vid: # movie subtitle editor
+   cheese :vid: # webcam video camera recorder
+   ffmpeg :aud:vid: # music/video player/editer # totem adds snow
+   k3b :vid: # graphical DVD ripper (much larger install -- QT)
+   obs-studio :aud:vid: # Open Broadcaster Software # replaced simplescreenrecorder
+   vobcopy :vid: # do I need libdvdread8 libdvdread-dev? # DVD ripper # vobcopy -m # mirror dvd
+
+   # WAYLANDWARE
+   foot :wayland: # minimalistic Wayland terminal emulator
+   grimshot :wayland: # screenshot tool for sway
+   imv :wayland: # image viewer for use with tiling window managers (X11/Wayland)
+   kanshi :wayland: # hotplug profiles which automatic enable and disable
+   tofi :wayland: # dmenu / rofi replacement for wlroots-based Wayland compositors
+   sway :wayland: # window manager (advanced i3)
+   wayvnc :ex:wayland: # VNC server for wlroots-based Wayland compositors
+   wev :wayland: # event debugging tool for Wayland window
+   wf-recorder :wayland: # screen recording  utility for wlroots-based compositors
+   wl-clipboard :wayland: # command line interface to the wayland clipboard
+   wlr-randr :wayland: # utility to manage outputs of a Wayland compositor
+   wlsunset :wayland: # day/night gamma adjustments for Wayland
+   wtype :wayland: # xdotool type for wayland
+
+	# XWARES/GTKWARE/WINDOWWARE # Gimp Tool Kit
+   appmenu-gtk2-module # exports old style menus to new ones (pavucontrol, evince... startup quicker)
+   console-setup-linux :sm: # /usr/share/consolefonts/Arabic-VGA32x16.psf.gz 
+   crystalcursors :sm: # update-alternatives --config x-cursor-theme
+   dunst :sm: # used by nofity-send to display notifications @see .config/dunst/dunstrc
+   # /8/dunst.KEEP :sm: # displays notifications # notify-send now has --replace-id
+   fontconfig :sm: # fc- commands
+   font-manager :: # manage and view fonts
+   fonts-linuxlibertine :: # Linux Libertine Mono 0
+   fonts-mono* :: # Mono(fur|i(d|some)) [Half][Loose|Tight]
+   fonts-roboto* :: # mono-spaced font
+   # gtk-3-examples # gtk3-demo referenced in man yad
+	# gtk-theme-switch # gtk theme switcher
+   jstest-gtk :: # joystick tester
+   openbox :x11: # (x11) display application windows
+   wmctrl :x11: # (x11) used by focus to choose a window
+   x11-xkb-utils :x11: # included # setxkbmap, xkbcomp, xkbprint, xkbvleds...
+   x11-utils :x11: # included # xdpyinfo, xev, xkill, xprop, xvinfo, xwininfo:..
+   x11-xserver-utils :x11: # included # xmodmap, xset, xsetmode, xrefresh...
+   xboxdrv :: # sony playstation joystick controller
+   xcalib :x11: # -invert -alter for W-S-y
+   xclip :x11: # command line paste into clipboard
+   xcolorsel :x.x11: # color grabber (find the button)
+   # -xcompmgr :pi: # composition slows system (transparency, animation...) # sway requires compositer
+   xorg-dev :x11: # fix ffplay Could not initialize SDL : No available video device ?
+   xdotool :x11: # (x11) focus to deteramine current window
+   xinit :x11: # (x11) startx to start the x11 system and execute ~/.xinitrc
+   xinput :x11: # (x11) change mouse settings
+	# xserver-xorg-core # included # fundamental x11 system
+	# xserver-xorg-video-intel # included # video driver
+	# xserver-xorg-input-all # included # keyboard driver
+   xwayland :wayland: # xwayland has bugs
+   unclutter :sm: # hide the mouse pointer
+	EOF
+
+# pip list --outdated # pip is pip3
+# pip list --outdated --format=freeze | tail -n+3 | cut -d= -f1 | xargs -n1 pip3 install -U
+: CheckPip <<-EOF
+	jedi # needed for emacs flycheck
+	# natsort # unsuccessful # natural sort with numbers
+	EOF
+
+CheckAlternatives
+CheckBluetooth #  fixes flag, not actual problem
+CheckColor
+CheckDirsFstab
+CheckDirsWanted
+CheckDirsUnwanted
+CheckDNS
+CheckEvince
+CheckGeoclue
+CheckGetty
+CheckImageMagick
+CheckIotop
+CheckPath
+CheckPrinter
+CheckSpdif
+CheckSsh
+CheckSudoers
+CheckTty
+CheckHostname
+
+# printf '%s\n' '# rm /etc/localtime # change time zone'  \
+   #	&& ln -s $(realpath /etc/localtime) /etc/localtime # /usr/share/zoneinfo/America/"
+
+echo '$ startx/sway'
+# shellcheck source=./.bash_login.check
+. "$gHome/.bashrc"

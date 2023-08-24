@@ -1,0 +1,895 @@
+#!/usr/bin/bash
+#
+# ~/.bash_login.check
+# toolbox included by .bash_login
+#
+# shellcheck disable=SC2155 # Declare and assign separately to avoid masking return values
+
+: "$g0Dir" # expected to be exported
+: "$gHome" # expected to be exported
+: "$gUser" # expected to be exported
+
+# these variables only used inside these function declarations
+g0Base=$(basename -- "${BASH_SOURCE[0]}") # used in notifications and will be -bash during login
+gVarColor=$(tput setaf 3)
+gInTTY=$(tty) || gInTTY=/dev/null # do use 'not a tty'
+[[ -r "$gInTTY" ]] || gInTTY=/dev/null
+
+declare -r dErrColor1=$(tput setaf 1)
+declare -r dErrColor2=$(tput setaf 9)
+EchoErr() { # ERROR...
+	>&2 echo "$dErrColor1!!!$(tput sgr0) $g0Base:$dErrColor2 $*.$(tput sgr0)"
+}
+
+EchoLink() { # FROM [TO]
+	local zTo="${2-$(realpath "$1")}"
+   local zDir1=$(dirname "$1")
+   local zDir2=$(dirname "$zTo")
+	echo "${zDir1%/}/$gVarColor$(basename "$1")$(tput sgr0) -> ${zDir2%/}/$gVarColor$(basename "$zTo")$(tput sgr0)"
+}
+
+DoUntilKeypress() { # DESC command
+   printf '%s\n' "$1... (Press any key to interrupt)"
+   $2 "${@:3}" < <(cat -) &
+   local zPid=$!
+   while kill -0 "$zPid" &>/dev/null; do
+      if KbdRead -s -t 0.1 < "${gInTTY:-/dev/stdin}"; then
+         kill "$zPid" 
+			EchoErr "User Abort $2"
+			return 254
+		fi
+   done
+   wait "$zPid"
+   return
+}
+
+IsRootTo() { # [-n] REASON... (lower first letter; IsRootTo will add period at end)
+   # -n = logical not the root privileges test
+	# always output REASON (as error or as fact).
+   # output nothing without a REASON, but do return root test result
+	# executes id, because sudo does not change $USER and $gUser can't be trusted
+   if [[ '-n' = "$1" ]]; then
+      if [[ 0 = "$(id --user)" ]]; then
+         #shellcheck disable=SC2199 # Arrays implicitly concatenate in [[ ]]
+         [[ "${@:1}" ]] && EchoErr "Cannot run as root to $1" "${@:2}"
+         return 1
+      fi
+   elif [[ 0 != "$(id --user)" ]]; then
+      [[ "$*" ]] && EchoErr "Must run as root to ${1}" "${@:1}"
+      return 1
+   fi
+   [[ "$*" ]] && printf '%s\n' "${*^}."
+   return 0 # any failure cannot change result
+}
+
+KbdRead() { # [-c # must be first] [-s # suppress output] [-t TIMEOUT] [any other bash 'read' options]
+	# deals with keyboard escape sequences (probably incomplete)
+	# output will be in $REPLY
+	if [[ '-c' = "$1" ]]; then # clear keyboard buffer
+		while read -r -t 0.001; do :; done
+		shift # the -c is special -- not passed to read
+	fi
+   read -r -N1 "$@" || return 1
+	if [[ $'\x1b' = "$REPLY" ]]; then	# skip escape sequences
+		local zOpener
+		read "$@" -r -N1 -t 0.001 zOpener \
+			|| (>&2 echo "!!! Unterminated keyboard escape sequence (no opener)" && return 2)
+		REPLY+="$zOpener"
+		case "$zOpener" in
+			\[) # common escape sequence begin marker
+				local zData
+				read "$@" -r -N1 -t 0.001 zData \
+					|| ( EchoErr "Unterminated keyboard escape sequence (nothing after \1b[)" && return 2)
+				REPLY+="$zData"
+				case "$zData" in
+					[A-D]) return ;; # up, down, right, left
+					[0-9]) # digit sequence ends with ~
+						while :; do
+							read "$@" -r -N1 -t 0.001 zData \
+								|| ( >&2 echo "!!! Unterminated keyboard escape sequence" && return 2)
+							REPLY+="$zData"
+							[[ '~' = "$zData" ]] && return
+						done ;;
+					*)  >&2 echo "!!! Unknown keyboard escape sequence \1b[$zData" && return 2
+				esac ;;
+			O) # PF Key should be P-S
+				local zData
+				read "$@" -r -N1 -t 0.001 zData \
+					|| ( >&2 echo "!!! Unterminated keyboard escape sequence (nothing after \1bO)" && return 2)
+				REPLY+="$zData" ;;
+			*)  >&2 echo "!!! Unknown keyboard escape sequence \1b$zOpener" && return 2
+		esac
+	fi
+}
+
+###
+######
+########### The Check Routines
+######
+###
+
+CheckAlternatives() {
+   # broser
+   local zAlts=/etc/alternatives
+   while read -r zLink zWant; do
+      [[ -e "$zWant" ]] || continue
+	   local zIs=$(readlink "$zAlts/$zLink")
+	   EchoLink "$zLink" "$zWant"
+	   if [[ "$zWant" != "$zIs" ]] \
+			   && IsRootTo "link $(basename "$zWant") to ${zLink@Q} instead of ${zIs@Q}"; then
+		   # update-alternatives --config "$zLink"
+         ln -sfT "$zWant" "$zAlts/$zLink"
+	   fi
+   done <<-EOF
+x-www-browser /usr/bin/firefox-esr
+x-cursor-theme /etc/X11/cursors/crystalblue.theme
+x-terminal-emulator /usr/bin/terminator
+EOF
+}
+
+CheckAmdGpu() { # AMD Radeon GPU requires special driver install
+   # test for the gpu...
+   ! lspci | grep '\[AMD\/ATI\]' | grep -q 'Device 1681' && return
+   # amdgpu: firmware-linux
+   # amdgpu: firmware-linux-nonfree
+   # amdgpu: libdrm-amdgpu1
+   # amdgpu: xserver-xorg-video-amdgpu
+   # x:amdgpu: mesa-opencl-icd
+   # x:vulkan: mesa-vulkan-drivers libvulkan1
+   # x:vulkan: vulkan-tools vulkan-utils
+   # x:vulkan: vulkan-validationlayers
+   command -v amdgpu-install &>/dev/null && return
+   IsRootTo "Install driver for ASRock Radeon GPU" || return
+   local zDeb=/7/amdgpu-install_5.4.50405-1_all.deb
+   if ! [[ -e "$zDeb" ]]; then
+      EchoErr "Cannnot locate ${zDeb} for ASRock Radeon GPU."
+   else
+      dpkg -i "$zDeb"
+      CheckFile 'allow amdgpu source code' \
+                /etc/apt/sources.list.d/amdgpu.list \
+                '# /etc/apt/sources.list.d/amdgpu.list
+
+deb https://repo.radeon.com/amdgpu/5.4.5/ubuntu jammy main
+deb-src https://repo.radeon.com/amdgpu/5.4.5/ubuntu jammy main
+'
+      CheckFile 'allow amdgpu proprietary packages' \
+                /etc/apt/sources.list.d/amdgpu-proprietary.list \
+                '# /etc/apt/sources.list.d/amdgpu-proprietary.list
+
+# license: /usr/share/amdgpu-install/AMDGPUPROEULA
+deb https://repo.radeon.com/amdgpu/5.4.5/ubuntu jammy proprietary
+'
+      amdgpu-install # this is bash code
+   fi
+}
+
+CheckApt() {
+   # manual modification of /etc/apt/sources.list still required
+   # manual creation of /etc/apt/preferences for pinning still desirable
+   # allow source contrib non-free
+   local zOldSrc='^#[[:space:]]deb-src '
+   local zNewSrc='^deb-src '
+   local zContrib='^[^#].+ contrib\b'
+   local zNonFree='^[^#].+ non-free\b'
+   local zOldMain='(^[^#].+) main\b.*'
+   local zNewMain='\1 main contrib non-free'
+   local zSource
+   for zSource in /etc/apt/sources.list; do
+      # /etc/apt/sources.list.d/*; excluded from the search
+      # uncomment deb-src
+      if grep --quiet -E "$zOldSrc" "$zSource" \
+            && IsRootTo "allow source code installation in $zSource"; then
+         sed -i "s/$zOldSrc/$zNewSrc/" "$zSource"
+      fi
+      # make sure sources specifies contrib and non-free
+      local zOld=$(grep -E "$zOldMain" "$zSource")
+      if ( grep -qvE "$zContrib" <<< "$zOld" \
+              || grep -qvE "$zNonFree" <<< "$zOld" ) \
+            && IsRootTo "allow contrib and non-free in $zSource"; then
+         mv -f "$zSource" "$zSource~"
+         # sed -i does not allow subsitution references
+         sed -E "s/$zOldMain/$zNewMain/" "$zSource~" > "$zSource"
+      fi
+   done
+}
+
+CheckBluetooth() { # configuration files in /etc/bluetooth
+	return # this routine does not solve any real problem
+	# [need to add account to the lp group if you wish to connect to a bluetooth tether.]
+	# good to rid the sap plugin because it creates insecurity and no longer used to amp a signal
+	# test will not sense a problem is bluetooth service is not started
+	if systemctl status bluetooth.service | grep -q "Sap driver initialization failed." \
+			&& IsRootTo "to disable Bluetooth SIM Access Profile"; then
+		# --noplugin=sap stops attempt to SIM Access Profile
+		# --compat also recommended
+		local zPattern='ExecStart=.*bluetoothd'
+		local zOptions='--compat --noplugin=sap'
+		find / -mount -iname "*blue*.service" 2>/dev/null \
+			| xargs -d $'\n' grep -lEe "$zPattern" \
+			| tee >(xargs -d $'\n' sed -i -Ee "s|($zPattern).*|\1 $zOptions|") \
+			| xargs -d $'\n' printf "Added $zOptions to %s\n"
+		exit
+		sudo systemctl daemon-reload
+		sudo systemctl restart bluetooth
+	fi
+	# attempt to eliminate boot message "rtk_btusb: This is not 8723a, use new patch style!" did NOT work
+	#   download/install version B Bluetooth dongle drivers (Realtek is being slow about Linux 5.8 changes)
+	#   local zBase='https://raw.githubusercontent.com/Realtek-OpenSource/android_hardware_realtek/rtk1395/bt/rtkbt/Firmware/BT'
+	#   sudo wget -o /lib/rtl8761b_config.bin "$zBase/rtl8761b_config"
+	#   sudo wget -o /lib/rtl8761b_fw.bin "$zBase/rtl8761b_fw"
+	#   also copy to /usr/lib if necessary (seem to be duplicates -- but did not help)
+	#     /lib/ system resources (may be a link to /usr/lib/)
+	#     /usr/lib/ system resources needed by users
+	#     /var resources specific to local system
+	#     /var/lib/ possibly mutable system resources needed by users
+	#   sudo cp /lib/rtl8761b_config.bin /usr/lib/rtl8761b_config.bin
+	#   sudo cp /librtl8761b_fw.bin /usr/lib/rtl8761b_fw.bin
+}
+
+CheckColor() {
+   if ! hash dircolors; then
+	   EchoErr "Could not hash dircolors."
+   else
+	   local zColors="$g0Dir/.bash_login.LS_COLORS"
+      if [  -r "$zColors" ]; then
+		   eval "$(dircolors "$zColors")"
+	   else
+		   EchoErr "Could not locate ${zColors@Q}."
+		   eval "$(dircolors)"
+	   fi
+   fi
+   export GCC_COLORS='error=01;31:warning=01;35:note=01;36:caret=01;32:locus=01:quote=01'
+   local -i zColor=15
+   while read -rN1 zChar; do
+      echo -n "$(tput setaf $zColor)$zChar"
+      if [[ ' ' != "$zChar" ]]; then
+         if [[ 0 -eq "$zColor" ]]; then
+            zColor=154 # skip dark colors
+         elif [[ 16 -gt "$zColor" ]]; then
+            zColor+=-1;
+         else
+            zColor+=1;
+         fi
+      fi
+   done < <(echo -n "display hundreds of colors............")
+   tput sgr0
+   echo
+}
+
+CheckDbus() {
+   # Dbus services in /usr/share/dbus-1/services/ are (re)started automatically.
+   local zDustService=org.knopwob.dunst
+   local zRootServices='/usr/share/dbus-1/services'
+   # XDG = X Desktop Group
+   # @see https://wiki.archlinux.org/title/XDG_Base_Directory
+   local zUserServices="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services"
+   mkdir -p "$zUserServices"
+   local zStandardService='org.freedesktop.Notifications'
+   local zWantedService="${SERVICE:-$zStandardService}"
+   sudo ln -sfT \
+      "$zRootServices/$zWantedService.service" \
+      "$zUserServices/zStandardService.service"
+}
+
+CheckDirsFstab() {
+   # ensure ftab mountpoints exist
+	local zMount
+	local zDidMkdir
+   while read -r zMount || [[ -n "$zMount" ]]; do
+		# user mountable directories from fstab (testing and extraction is overly simple)
+	 	if [[ ! -d "$zMount" ]]; then
+			IsRootTo "create fstab directory ${zMount@Q}" \
+				&& mkdir -pv "$zMount" \
+				&& zDidMkdir=t
+		fi
+		# ignore group us if not created yet
+		if [[ -e "$zMount" ]] && getent group us &>/dev/null; then
+			if [[ root:us:775 != $(stat "$zMount" --format='%U:%G:%a') ]]; then
+				IsRootTo "allow full user access to ${zMount@Q}" \
+					&& chown root:us "$zMount" \
+					&& chmod 775 "$zMount"
+			fi
+		fi
+   done < <(sed '/^#/d' /etc/fstab | grep -E '\Wuser\W' | cut -d' ' -f2 | sed '/^[^\/]/d;/^$/d')
+   [[ -n "$zDidMkdir" ]] && [[ 0 = $(id -u) ]] && mount -a
+}
+
+CheckDirsUnwanted() {
+   # CheckDirsWanted must be called first to ensure existence of replacement folders 
+   [[ root = "$gUser" ]] && return 0
+   # remove ignorant home directories
+   unset zDidRemove
+	local zDir
+   for zDir in Bookshelf Desktop Documents Downloads Music Pictures Public Templates Videos; do
+      if [[ -d "$zDir" ]]; then
+			if [[ -z "$(find "$gHome/$zDir" -maxdepth 0 -empty 2>/dev/null)" ]]; then
+				case "$zDir" in
+               Bookshelf) mv -iv "$gHome/$zDir/"* "$gHome/0/" ;;
+					Desktop) EchoErr "Consider removing desktop files." ;;
+					Documents) mv -iv "$gHome/$zDir/"* "$gHome/1/" ;;
+					Downloads) mv -iv "$gHome/$zDir/"* "$gHome/8/" ;;
+					Music) mv -iv "$gHome/$zDir/"* "$gHome/3/" ;;
+					Pictures) mv -iv "$gHome/$zDir/"* "$gHome/2/" ;;
+					Public) EchoErr "Public directory replacement not yet available." ;;
+					Templates) mv -iv "$gHome/$zDir/"* "$gHome/1/" ;;
+					Videos) mv -iv "$gHome/$zDir/"* "$gHome/4/" ;;
+				esac
+			fi
+			rmdir -v "$gHome/$zDir" && zDidRemove=x
+		fi
+   done
+   [[ -n "$zDidRemove" ]] \
+      && EchoErr "Update .config/user-dirs.dirs if unwanted directories keep reappearing"
+}
+
+CheckDirsWanted() {
+   LinkTo() { # LINK DEST
+      if [[ -e "$1" ]]; then
+         local zDest=$(realpath "$1")
+         [[ "$(realpath "$2")" = "$zDest" ]] && return
+         if [[ -h "$1" ]]; then
+            EchoErr "${1@Q} links to ${zDest@Q} instead of ${1@Q}"
+         else
+            EchoErr "Physical at ${1@Q} and ${2@Q}"
+         fi
+      else
+         if [[ -w "$(dirname "$1")" ]]; then
+            ln -sT "$2" "$1" \
+               || EchoErr "Could not link from ${1@Q} to ${2@Q}"
+         elif IsRootTo "create link from ${1@Q} to ${2@Q}"; then
+            sudo ln -sT "$2" "$1" \
+               || EchoErr "Could not link from ${1@Q} to ${2@Q}"
+         fi
+      fi
+   }
+   # not good to store common executables externally
+	# /9 should be link to $gHome/.local/bin which should be in $PATH
+   LinkTo "/9" "$gHome/.local/bin"
+	for zDir in {0..9}; do
+      # do not want to require external mounts anymore
+      ln -fsT "/$zDir" "$gHome/$zDir" \
+         || EchoErr "Could not link $gHome/$zDir to /$zDir"
+	done
+}
+
+CheckDNS() {
+   if ! ping -qc1 -W4 1.1.1.1 &>/dev/null; then # quiet count 1 timeout 4 sec
+	   EchoErr "Ethernet failed"
+      local zWirelessDaemon=iwd.service
+      zActive=$(systemctl is-active "$zWirelessDaemon")
+      [[ active != "$zActive" ]] \
+         && IsRootTo "systemctl start ${zWirelessDaemon@Q}" \
+         && sudo systemctl start "$zWirelessDaemon" \
+         && sudo systemctl enable "$zWirelessDaemon"
+	   # iwctl station wlan0 scan \
+	      # && iwctl station wlan0 get-networks \
+	      # && iwctl station wlan0 connect M2000-BBBA && echo "wlan0 connected M2000-BBBA."
+   fi
+   # unit dbus-org.freedesktop.resolve1.service is NOT in use
+   # package resolvcong NOT installed
+   # NOW using systemd to perform domain name resolution
+   # service dnsmasq ACTIVE (do not know why)
+   # local zServer=$(dig amazon.com | sed -nE 's/.*SERVER: ([0-9.#]*).*/\1/p')
+   # [[ "1.1.1.1#53" = "$zServer" ]]
+   local zConf=/etc/resolv.conf
+   local zServer=$(sed -nE 's/^[[:space:]]*nameserver[[:space:]]+(.*)/\1/p' "$zConf" | tr $'\n' ' ')
+   if [[ ! '1.1.1.1' =~ "$zServer"* ]] \
+         && IsRootTo "use DNS 1.1.1.1 instead of $zServer via update of ${zConf@Q} (should also update /etc/resolvconf.conf)"; then
+      printf '%s\n' "nameserver 1.1.1.1" > "$zConf"
+      chown :kept /etc/resolv.conf
+      local zProtect=/etc/dhcp/dhclient-enter-hooks.d/leave_my_resolv_conf_alone
+      [[ -d "$(dirname "$zProtect")" ]] \
+         && echo 'make_resolv_conf() { :; }' > "$zProtect" \
+         && chmod 755 "$zProtect" # leave the file alone
+   else
+      printf '%s\n' "DNS Server: $gVarColor$zServer$(tput sgr0)"
+   fi
+   return
+   # -- OLD -- configure dhclient to hopefully keep wanted settings
+   # setting immutable bit causes dhclient-script to make a mess
+   local zConfig=/etc/dhcp/dhclient.conf
+   local zWant='supersede domain-name "nimrac.me"'
+   ! grep -q "^$zWant" "$zConfig" \
+      && IsRootTo "$zWant" \
+      && tee --append "$zConfig" <<< "$zWant"
+   local zWant='supersede domain-search "nimrac.me"'
+   ! grep -q "^$zWant" "$zConfig" \
+      && IsRootTo "$zWant" \
+      && tee --append "$zConfig" <<< "$zWant"
+   local zWant='supersede domain-name-servers 1.1.1.1'
+   ! grep -q "^$zWant" "$zConfig" \
+      && IsRootTo "$zWant" \
+      && tee --append "$zConfig" <<< "$zWant"
+   [[ keep != "$(stat --format "%G" "$zConfig")" ]] \
+      && IsRootTo "chown :keep ${zConfig@Q}" \
+      && chown :keep "$zConfig"
+   # -- OLD -- set immutable flag on /etc/resolv.conf
+   # causes a tail made by /usr/share/udhcpc/default.script
+	# !!! installation of bind9/named/resolvconf relieves this override !!!
+	# !!! I believe that I am currently handling this via resolvconf !!!
+   # !!! I am no longer using the immutable bit !!!
+   # set immutable bit on /etc/resolv.conf if belongs to group keep
+   if [[ 1 = "$(find /etc/resolv.conf -group keep 2>/dev/null | wc -l)" \
+            && i != "$(lsattr /etc/resolv.conf | cut -b5)" ]]; then
+      if IsRootTo "set immutable bit not set in /etc/resolv.conf"; then
+         chattr +i /etc/resolv.conf
+      fi
+   fi
+   # every attempted domain resolution replacement leaves a file behind
+   zResolvCount=$(find /etc/resolv.conf.dhclient-new.* 2>/dev/null | wc -l)
+   if [[ 0 != "$zResolvCount" ]]; then
+      if IsRootTo "remove $zResolvCount /etc/resolv.conf attempted replacements"; then
+         rm /etc/resolv.conf.dhclient-new.* # remove failed attempts to replace DNS resolution
+      fi
+   fi
+}
+
+CheckEvince() { # evince no longer used since mupdf
+   hash evince 2>/dev/null || return
+	if ! hash gsettings 2>/dev/null; then
+		EchoErr "Lacking gsettings: Cannot check/set evince cache size."
+		return 1
+	fi
+	local zSize=$(gsettings get org.gnome.Evince page-cache-size | awk '{print $2}')
+	if [[ 1024 -gt "$zSize" ]]; then
+		if [[ -d "$gHome/.config/dconf" ]]; then
+			echo "Give evince larger cache to magnify pdfs more."
+			gsettings set org.gnome.Evince page-cache-size 2014 # 50 by default
+	      zSize=$(gsettings get org.gnome.Evince page-cache-size | awk '{print $2}')
+		else
+			>&2 echo "Cannot expand evince cache size until X has been inited." 
+			# gsettings writes setting in ~/.config/dconf/user
+			# but file will has ungly unique extension if X not inited.
+		fi
+	fi
+   echo "Evince cache size: $gVarColor$zSize$(tput sgr0)K"
+}
+
+CheckFile() { # IS-ROOT-TO FILE-NAME FILE-CONTENTS
+   [[ -e "$2" && "$3" = "$(cat "$2")" ]] && return
+   [[ "$1" ]] && ! IsRootTo "$1" && return
+   echo "$3" > "$2"
+}
+
+CheckGeoclue() {
+	# ensure that geolocation services are disabled 
+	local zStatus
+	zStatus=$(systemctl status geoclue.service 2>/dev/null)
+   [[ "$zStatus" ]] || return
+   if ! grep -q 'Active: inactive' <<< "$zStatus" \
+			&& IsRootTo 'stop geoclue.service to prevent mozilla servers from trying to determine location'; then
+      systemctl disable geoclue.service
+   fi
+   if ! systemctl status geoclue.service | grep --quiet 'Loaded: masked' \
+			&& IsRootTo 'mask geoclue.service to prevent any start operation'; then
+      systemctl mask geoclue.service
+   fi
+   # Mozilla wants to directly track
+   local zConf='/etc/geoclue/geoclue.conf'
+   local zLabels='(allowed|enable|submit-data)'
+   if [[ -e "$zConf" ]] \
+         && grep -qE "^$zLabels=true" "$zConf" \
+         && IsRootTo 'disable settings in /etc/geoclue/geoclue.conf which allow geoclue services'; then
+      sed -i~ -E "s/^$zLabels=true/\\1=false/" "$zConf"
+   else
+      : echo "Geolocation is disabled"
+   fi
+}
+
+CheckGetty() {
+	# test via # systemctl daemon-reload; systemctl restart getty@tty1.service
+	# Ctrl-Alt-Fun to switch terminals
+	local zOverrideDir="/etc/systemd/system"
+	local zOriginalDir="/lib/systemd/system"
+   # cause to boot into console
+   local zService="$zOverrideDir/default.target"
+   local zWanted="$zOriginalDir/multi-user.target"
+   local zCurrent=$(readlink "$zService")
+   if [[ "$zWanted" != "$zCurrent" ]]; then
+      if IsRootTo "console login via link ${zService@Q} to ${zWanted@Q} instead of ${zCurrent@Q}"; then
+         ln -sf -T "$zWanted" "$zService"
+         chown :keep "$zService"
+      fi
+   fi
+   # create override.conf to override autologin.conf
+	local zService='getty@tty1.service'
+   local zOverride="$zOverrideDir/$zService.d/override.conf"
+	if ! [[ -e "$zOverride" ]]; then
+		# see man agetty
+		# see man logind.config
+		IsRootTo "automatically login via ${zOverride@Q}" || return
+		mkdir -p "$(dirname "$zOverride")"
+      cat > "$zOverride" <<-EOF
+# systemctl enable $zService # enable this automatic login.
+# systemctl disable $zService # disable this automatic login.
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $gUser --noclear %I $TERM
+EOF
+      systemctl daemon-reload
+	fi
+	if ! systemctl status "$zService" | grep -q "Active: active (running)"; then
+		systemctl enable getty@tty1.service
+      # Created symlink /etc/systemd/system/getty.target.wants/getty@tty1.service → /lib/systemd/system/getty@.service.
+	fi
+}
+
+CheckGroups() { # < GROUPS
+	# # COMMENT # skilp this line # comments started after BOL are data
+	# sys NAME PURPOSE # make sure that $gUser belongs to system group NAME
+	# NUMBER NAME PURPOSE # create group as needed according to NUMBER
+   while read -r zGroupId zGroupName zReason; do
+      [[ '#' = "$zGroupId" ]] && continue # skip comments
+      if [[ -z "$(getent group "$zGroupName")" ]]; then
+         if [[ sys = "$zGroupId" ]]; then
+            EchoErr "Could not find system group ${zGroupName@Q} [Some packages create groups]"
+            continue
+			else
+				local zFoundName=$(getent group "$zGroupId" | cut -d: -f1)
+				if [[ -z "$zFoundName" ]]; then
+					! IsRootTo "create group ${zGroupName@Q}" && continue
+					groupadd --gid "$zGroupId" "$zGroupName"
+				else
+					! IsRootTo "rename group ${zFoundName@Q} to ${zGroupName@Q}" && continue
+					groupdel "$zFoundName"
+					groupadd --gid "$zGroupId" "$zGroupName"
+				fi
+         fi
+      fi
+      if ! id --groups --name "$gUser" | grep -q "\\b$zGroupName\\b"; then
+         ! IsRootTo "add user to group $zGroupName $zReason" && continue
+         adduser "$gUser" "$zGroupName"
+      fi
+   done
+   echo "$gUser groups: $gVarColor$(groups "$gUser")$(tput sgr0)"
+}
+
+CheckHostname() {
+	# to change machine-id
+	#   replace contents of /etc/machine-id with desired id
+	#   copy that file to /var/lib/dbus/machine-id # create mirror declaration
+	#   dbus-uuidgen --ensure # create /var/lib/dbus/machine-id from /etc/machine-id
+	#   reboot # to accept new information
+	# Note: if dbus-uuidgen is part of the boot sequence, then rebooting would be enough.
+	#   systemd-machine-id-setup # before reboot will restore the original value
+	# Note: changing machine-id claimed to be dangerous because it must be unique.
+	# systemd-firstboot --root=/media/CLONED_DISK --setup-machine-id
+	if ! grep -qz  "[[:space:]]*Icon name: stellar[[:space:]]*Chassis: container" \
+		  < <(hostnamectl status) \
+			&& IsRootTo "assign cool description"; then
+		echo "Assign host attributes..."
+		# these attributes are stored in /etc/machine-info
+		hostnamectl set-icon-name stellar # ICON_NAME=
+		hostnamectl set-chassis container # CHASSIS=
+		hostnamectl set-deployment testing # DEPLOYMENT=
+		hostnamectl set-location yonder # LOCATION=
+		# PRETTY_HOSTNAME=may_be_used_by_bluez
+	fi
+	hostnamectl status | awk '
+		BEGIN {FS=":"}
+  		/Static hostname/ {zName=$2}
+      /Icon name/ {zIcon=$2; next} # stellar
+      /Chassis/ {zChassis=$2; next} # container
+      /Deployment/ {zPurpose=$2; next} # testing
+      /Location/ {zLocation=$2; next} # beyondSpace
+      /Machine ID/ {zMachine=$2; next} # 9d96dcad0bc8461bb337c894dbce0050
+      /Boot ID/ {zBoot=$2; next} # 1f2b296e40a24335acfd5edd26ef337c
+  		/Operating System/ {zOS=$2; next} # Raspbian GNU/Linux 10 (buster)
+      /Kernel/ {zKernel=$2; next} # Linux 5.10.52-v7l+
+      /Architecture/ {zArchitecture=$2; next} # arm
+		END { print zName", the"zOS zIcon zChassis", is" zPurpose,"in" zLocation"." } 
+'
+}
+
+CheckImageMagick() {
+   local zConfig=/etc/ImageMagick-6/policy.xml
+   if ! [[ -e "$zConfig" ]]; then
+      EchoErr "ImageMagick configuration file does not exist at $zConfig"
+   else
+      local zDisallowed=$(sed -nE 's/^[[:space:]]*<policy domain="coder" rights="none" pattern="([^\"]+)".*/\1/p' "$zConfig")
+      [[ -z "$zDisallowed" ]] && return
+      zDisallowed=$(printf '%s' "$zDisallowed" | tr $'\n' ' ')
+      if IsRootTo "Not disable convert coder for $zDisallowed"; then
+         # simply commenting out the "none" lines does not work
+         local zNew=$(sed -E 's/^([[:space:]]*)(<policy domain="coder" rights=")none(" pattern="([^\"]+)".*)/\1/\2read|write\3' "$zConfig")
+         mv -f "$zConfig" "$zConfig~"
+         printf '%s' "$zNew" > "$zConfig"
+      fi
+   fi
+}
+
+CheckIotop() {
+   return
+   # no idea why this does NOT allow the user to run iotop
+   # iotop error message claims that it will allow user to run iotop
+   # now there does not seem to be a problem ???
+   if [[ ! -x /sbin/iotop ]]; then
+      EchoErr 'Could not find /sbin/iotop'
+   else
+      local zAbility=cap_net_admin
+      local zIoTop=$(realpath /sbin/iotop) # cannot apply capability through a link
+      if ! setcap -q -v "$zAbility+eip" "$zIoTop" \
+            && IsRootTo 'set user iotop capability'; then
+         setcap "$zAbility+eip" "$zIoTop"
+      fi
+   fi
+}
+
+CheckPackage() { # expects dynamic variables: zCant zPackage zReason
+	# return 0 if package ok
+	# return 1 if should install package
+	# return 2 if should update package
+	# return 3 if unable to locate package
+	# return 4 if no candidate for package
+	# return 5 if architecture mismatch
+	# return 6 if should install dpkg
+   # return 7 if should update dpkg
+   # return 8 if install via executable not coded
+   # return 9 if unknown file type
+   # return NOT-CODED if filename contains a space
+   if [[ / = "${zPackage:0:1}" ]]; then
+      CheckPackageFile
+   else
+	   local zPolicy=$(apt-cache policy "$zPackage")
+      [[ -z "$zPolicy" ]] && return 3
+      local zInstalled="$(printf '%s' "$zPolicy" | sed -nE '2s/.* //p')"
+      local zCandidate="$(printf '%s' "$zPolicy" | sed -nE '3s/.* //p')"
+      #local zPin="$(echo "$zPolicy" | sed -nE '5s/.* //p')"
+	   [[ '(none)' = "$zCandidate" ]] && return 4
+      [[ '(none)' = "$zInstalled" ]] && return 1
+      # !!! test does NOT consider downgrade possibility
+	   [[ "$zInstalled" = "$zCandidate" ]] && return 0
+	   return 2
+   fi
+}
+
+CheckPackageFile() {
+   [[ -e "$zPackage" ]] || return 3
+   zType=$(file --brief "$zPackage")
+   if [[ "$zType" =~ ^"Debian binary package" ]]; then
+      local zPackageInfo=$(dpkg --info "$zPackage")
+      local zInstalledName=$(printf '%s' "$zPackageInfo" \
+                                | sed -nE 's/ Package:[[:space:]]*(.*)/\1/p')
+      [[ -z "$zInstalledName" ]] && return 4
+      local zInstalled="$(apt-cache policy "$zInstalledName" | sed -nE '2s/.* //p')"
+      [[ -z "$zInstalled" || '(none)' = "$zInstalled" ]] && return 6
+      local zCandidate=$(printf '%s' "$zPackageInfo" \
+                            | sed -nE 's/^ Version:[[:space:]]*(.*)/\1/p')
+      # !!! test does NOT consider downgrade possibility
+      [[ "$zInstalled" = "$zCandidate" ]] && return 0
+      # architecture test should be part of MUST_NOT (mismatch produces an error message)
+      local zArchitecture=$(printf '%s' "$zPackageInfo" \
+                               | sed -nE 's/^ Architecture:[[:space:]]*(.*)/\1/p')
+      if [[ "$zArchitecture" && all != "$zArchitecture" ]]; then
+         local zAvailable=$(uname -r)
+         zAvailable=${zAvailable##*-} # might wish to also consider uname -m
+         # shellcheck disable=SC2076 # remove quotes to match regex instead of literal
+         [[ "$zArchitecture" =~ "$zAvailable" ]] || return 5
+      fi
+      return 7
+   elif [[ "$zType" =~ "executable"$ ]]; then
+      return 8
+      "$zPackage" policy # KEEP files need to understand "policy"
+   fi
+   return 9
+}
+
+CheckPackages() { # COLON_SEPARATED_MUST_lIST COLON_SEPARATED_MUST_NOT_LIST < PACKAGE_DATA
+	# # marks comment until eol
+	# PACKAGE_NAME - PACKAGE_DESCRIPTION
+	# /FILE_NAME - PACKAGE_DESCRIPTION # !!! FILE_NAME cannot contain a space !!!
+   local zMust zMustNot
+   zMust=${1:+:}${1//:/:|:}${1:+:}
+   zMustNot=${2:+:}${2//:/:|:}${2:+:}
+	local -a zChecks
+	local zCant # reason for inability to use apt-get
+   if [[ 0 != "$(id -u)" ]]; then
+      zCant='Not root user'
+   elif ! ping -c1 -W1 1.1.1.1 &>/dev/null; then
+      systemctl restart networking.service # attept restart once
+      zCant=$(ping -c1 -W1 1.1.1.1 2>&1)
+      if [[ $? ]]; then
+         zLoss=$(sed -nE '$s/.* ([[:digit:]]+% packet loss).*/\1/p' <<< "$zCant")
+         if [[ "$zLoss" ]]; then
+            zCant="$zLoss"
+         elif [[ -z "$aCant" ]]; then
+            zCant='unsuccessful ping'
+         fi
+      fi
+      EchoErr "$zCant"
+   fi
+   if [[ -z "$zCant" ]]; then # unonditional update of package availability
+		echo "apt-get --allow-releaseinfo-change update..."
+		apt-get --allow-releaseinfo-change update &>/dev/null \
+         || EchoErr "Unable to update package information"
+      # http://dl.google.com/linux/earth/deb causes error code 100 (unsigned)
+	fi
+   while read -r zPackage; do
+      if ! [[ "$zPackage" =~ ^[[:space:]]*([^#:]+)(:[^ ]*:)?[[:space:]]*(# (.*))?$ ]]; then
+         [[ "$zPackage" =~ ^[[:space:]]*# ]] && continue # skip comments
+         [[ "$zPackage" =~ ^[[:space:]]*$ ]] && continue # skip empty lines
+         EchoErr "Sytax error in CheckPackages stdin ${zPackage@Q}"
+         continue
+      fi
+      zArch=${BASH_REMATCH[2]}
+      zPackage=${BASH_REMATCH[1]%% *}
+      zComment=${BASH_REMATCH[3]}
+      [[ "$zMust" && ! "$zArch" =~ ($zMust) ]] && continue
+      [[ "$zMustNot" && "$zArch" =~ ($zMustNot) ]] && continue
+		CheckPackage
+		local zCheck="$?"
+		[[ "${zChecks["$zCheck"]}" ]] && zChecks["$zCheck"]+=" "
+		zChecks["$zCheck"]+="$zPackage"
+		if [[ 0 -ne $zCheck ]]; then
+			echo -n " $(tput setab 1)$(tput setaf 15)$zPackage$(tput sgr0)"
+		else
+			echo -n " $(tput setaf 6)$zPackage$(tput sgr0)"
+		fi
+   done
+   echo
+	[[ "${zChecks[3]}" ]] && EchoErr "Unknown ${zChecks[3]}"
+	[[ "${zChecks[4]}" ]] && EchoErr "No candidate for ${zChecks[4]}"
+	[[ "${zChecks[5]}" ]] && EchoErr "Architecture mismatch for ${zChecks[5]}"
+   if [[ "${zChecks[1]}" ]]; then
+		if [[ "$zCant" ]]; then
+			[[ "${zChecks[1]}" ]] && EchoErr "$zCant: Skipping install of ${zChecks[1]}"
+		else
+			printf "Installing %s..." "$zNeeds"
+			# shellcheck disable=SC2086 # Double quote to prevent globbing and word splitting
+			apt-get -y install ${zChecks[1]} < "${gInTTY:-/dev/stdin}"
+		fi
+	fi
+   if [[ "${zChecks[2]}" ]]; then
+		if [[ "$zCant" ]]; then
+			[[ "${zChecks[2]}" ]] && EchoErr "$zCant: Skipping update of ${zChecks[2]}"
+		else
+			printf "Updating %s..." "$zNeeds"
+			# shellcheck disable=SC2086 # Double quote to prevent globbing and word splitting
+			apt-get -y update ${zChecks[2]} < "${gInTTY:-/dev/stdin}"
+		fi
+	fi
+   if [[ "${zChecks[6]}${zChecks[7]}" ]]; then
+      if [[ "$zCant" ]]; then
+         [[ "${zChecks[6]}" ]] && EchoErr "$zCant: Skipping install of ${zChecks[6]}"
+         [[ "${zChecks[7]}" ]] && EchoErr "$zCant: Skipping update of ${zChecks[7]}"
+      else
+         local zDeb
+         for zDeb in ${zChecks[6]} ${zChecks[7]}; do
+            dpkg -i "$zDeb"
+         done
+      fi
+   fi
+}
+
+CheckPath() {
+   # include home stuff
+   grep -Eq "(\`|:)$gHome/" <(printf '%s' "$PATH") \
+      || PATH="$gHome/.local/bin:$PATH"
+   # include super-user paths for code completion
+   grep -Eq "(\`|:)/usr/sbin(\'|:)" <(printf '%s' "$PATH") \
+      || PATH="$PATH:/usr/local/sbin:/usr/sbin"
+   # remove symbolic links /bin and /sbin
+   PATH=$(sed -E "s@(\`|:)(/s?bin(\'|:))@\1@g" <(printf '%s' "$PATH"))
+   # $HOME/.cargo/env inclusion added by rust installer at https://sh.rustup.rs
+   # $HOME/,cargo/env prepends $HOME/.cargo/bin/ to $PATH
+   # rust was installed to compile firefox
+   # standard install removed from .profile, .bash_login, and .bashrc
+   [[ -r "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+   export PATH
+   echo "PATH=$gVarColor$PATH$(tput sgr0)"
+}
+
+CheckPrinter() {
+   # see localhost:631 for CUPS interface (CUPS soon to be removed in favor of ipp)
+   # data stored /etc/cups
+   return # STILL HAVING PROBLEMS -- maybe removal /etc/cups/printers.conf fixed it? 
+   echo "Declaring printer class $(tput setaf 3)Laser$(tput sgr0)..."
+   # usb://Brother/HL-L2350DW%20series?serial=U64964F8N515697 2 me Online Return Center 1 Collate media=iso_a5 Duplex=None job-uuid=urn:uuid:7f283be3-b5db-354a-71a4-330291ee7ab5 job-originating-host-name=localhost date-time-at-creation= date-time-at-processing= time-at-creation=1654301138 time-at-processing=1654360661 /var/spool/cups/d00002-001
+	lpadmin -p Brother_HL_L2350DW_series_USB \
+           -D "Laser" \
+			  -L "Box Therapy" \
+			  -v "usb://Brother/HL-L2350DW series?serial=U64964F8N515697" \
+			  -o Duplex=DuplexNoTumble \
+			  -o PageSize=Letter \
+			  -E 2> /dev/null
+   # ??? %20 VS SPACE ??? in connection device-uri
+   #	lpadmin -r Brother_HLL2350DW_series_USB -c Laser 2>/dev/null # avoid does not exist error
+   #	lpadmin -r Brother_HL_L2350DW_series_USB -c Laser 2>/dev/null # avoid does not exist error
+   #	lpadmin -p Brother_HL_L2350DW_series_USB@localhost -c Laser 2>/dev/null # avoid already member error
+   #	lpadmin -x HLL2350DW 2>/dev/null 2>/dev/null
+   # usb://EPSON/ET-4800%20Series?serial=5838474E3034323010&interface=1 1 me Online Return Center 1 Collate media=iso_a5 job-uuid=urn:uuid:2892c5ba-eda1-3698-7aef-ff6d62dda33f job-originating-host-name=localhost date-time-at-creation= date-time-at-processing= time-at-creation=1654301126 time-at-processing=1654360661 /var/spool/cups/d00001-001
+	echo "Declaring class $(tput setaf 3)Ink$(tput sgr0)..."
+	lpadmin -p EPSON_ET-4800_Series_USB \
+			  -D "Ink" \
+			  -L "Box Therapy" \
+			  -v "usb://EPSON/ET-4800%20Series?serial=5838474E3034323010&interface=1" \
+			  -o MediaType=PhotographicGlossyp \
+			  -o PageSize=4x6.Borderless \
+			  -E 2> /dev/null
+   #	lpadmin -p EPSON_ET-4800_Series_USB -c Ink 2>/dev/null # avoid already member error
+   #	lpadmin -x EPSON_ET-4800_Series 2>/dev/null # avoid does not exist error
+   # before Debian Bookworm, life was more specialized
+   #  if ! lpstat -a HLL2350DW 2>/dev/null; then
+   # 		local zDir="$gHome/8/brother"
+   # 		if ! cd "$zDir" 2>/dev/null; then
+   # 			>&2 echo "!!! Brother driver directory not found at $zDir"
+   # 			return 1
+   # 		elif IsRootTo "Install HLL2350DW printer driver"; then
+   # 			bash "linux-brprinter-installer-2.2.1-1"
+   # 			cd - || return
+   # 		fi
+   # 	fi
+}
+
+CheckSpdif() {
+   # assumes digi-pro-2.2
+   [[ -e /boot/config.txt ]] || return # only applicable to pi
+   # dtparam=i2s=on
+   local zConfig=/boot/config.txt
+   local zPat='dtparam=i2s='
+   local zOld=$(sed -n "s/$zPat/&/p" "$zConfig")
+   local zNew='dtparam=i2s=on'
+   if [[ "$zNew" != "$zOld" ]] \
+         && IsRootTo "change ${zOld@Q} to ${zNew@Q} in $zConfig"; then
+      if [[ "$zOld" ]]; then
+         sed -i "s/$zPat/$zNew/" "$zConfig"
+      else
+         printf '\n%s\n' "$zNew" >> "$zConfig"
+      fi
+      EchoErr "Need to reboot due to change in $zConfig"
+   fi
+   # dtoverlay=hifiberry-digi-pro
+   zPat='dtoverlay=hifiberry-digi-pro'
+   zOld=$(sed -n "s/$zPat/&/p" "$zConfig")
+   zNew="$zPat"
+   if [[ "$zNew" != "$zOld" ]] \
+         && IsRootTo "change ${zOld@Q} to ${zNew@Q} in $zConfig"; then
+      if [[ "$zOld" ]]; then
+         sed -i "s/$zPat/$zNew/" "$zConfig"
+      else
+         printf '\n%s\n' "$zNew" >> "$zConfig"
+      fi
+      EchoErr "Need to reboot due to change in $zConfig"
+   fi
+}
+
+CheckSsh() {
+   local zPublic="$gHome/.ssh/id_rsa.pub"
+   if [[ -e "$zPublic" ]] \
+         || IsRootTo -n "generate public rsa key in $zPublic"; then
+      EchoErr "Key generation via ssh_keygen not coded."
+   fi
+   # NOTE for ssh with pi:
+   #
+   # /etc/ssh/sshd_config # need Subsystem sftp internal-sftp or ssh would not work
+   # override default of no subsystems
+   # uncomment #Subsystem sftp internal-sftp
+   #### ABOVE changed from /usr/lib/openssh/sftp-server to agree with pi sshd_config ####
+   #### /usr/lib/openssh/sftp-server on either side disconnected sftp mounting ####
+}
+
+CheckSudoers() {
+   # a mistake here may require two sessions to fix owner 
+   # session 1: echo $$ # get pid of bash
+   # session 2: pkttyagent --process PID
+   # session 1: pkexec chown -R root:root /etc/sudoers /etc/sudoers.d
+   # session 2: enter password at prompt
+   local zConfig=/etc/sudoers.d/passwd_timeout
+   [[ -e "$zConfig" ]] && return # existing file assumed correct
+   IsRootTo "Set sudo timout to eight hours" || return
+   # default timeout is 5 minutes before asking for password again
+   # @see man sudoers (and visudo which was not required to do this)
+   printf '%s\n' "Defaults:ALL timestamp_timeout=480" > "$zConfig"
+   chmod 440 "$zConfig"
+}
+
+CheckTty() {
+   mesg y # allow messages from other users
+   stty -ixon # prevent ^S from freezing console (use ^Q to unfreeze)
+   export HISTCONTROL=ignoreboth # do not record duplicate commands or commands that start with spaces
+   export HISTSIZE=500 # number of commands to remember
+   export HISTFILESIZE=10000 # number of output lines to remember
+   export LC_COLLATE="C" # binary computer order (dot files, followed by upper case...)
+   export LESSHISTSIZE=0 # donot create .lesshst
+   hash lesspipe && eval "$(lesspipe)" # cause less to use pipe (not know percentage read up front)
+}
