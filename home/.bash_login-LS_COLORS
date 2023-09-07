@@ -1,14 +1,14 @@
-# LS_COLORS
+# ~/.bash_login-LS_COLORS
 ###########
-# used to set LS_COLORS during ~/.bash_login.check(CheckColor)
+# used to set LS_COLORS
 ###########
 # Maintainers: Magnus Woldrich <m@japh.se>,
 #              Ryan Delaney <ryan.patrick.delaney@protonmail.com>
 #         URL: https://github.com/trapd00r/LS_COLORS
 ###########
-# eval "$(dircolors ~/.bash_login.LS_COLORS)"
+# eval "$(dircolors ~/.bash_login-LS_COLORS)"
 ###########
-
+# * allowed ONLY as prefix, otherwise taken literally
 # 38=FOREGROUND;5;COLOR_NUMBER_0-255
 
 # core

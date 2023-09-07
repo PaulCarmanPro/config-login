@@ -35,8 +35,8 @@ gHome=$(grep "^$gUser:" /etc/passwd | cut -d: -f6) # more reliable than $HOME
 export g0Dir gHome gUser
 
 # include function declarations to clean self
-# shellcheck source=./.bash_login.check
-. "$g0Dir/.bash_login.check"
+# shellcheck source=./.bash_login-check
+. "$g0Dir/.bash_login-check"
 
 CheckGroups <<-EOF
 	sys adm allows general computer administration
@@ -130,6 +130,7 @@ DoUntilKeypress "Checking packages" \
    fakeroot :ex: # allows user package building
    fzf :ex: # command line fuzzy find # never successfully installed
    gdb :ex: # gnu debugger (does not handle bash or python)
+   gh # github fort the command line (create repository)
    git-all :: # version control system
    git-credential-oauth # git-credential-manager
    gnucobol :ex: # many COBOL dialects -- trying to use COBOL 2014
@@ -206,7 +207,15 @@ DoUntilKeypress "Checking packages" \
    rfkill :sm: # examine/change the status of transmission devices
 
    # GAMEWARE
-   minetest :game:
+   minetest :game: # open source minecraft
+   # lutris # play games from Origin, Steam, Ubisoft Connect, and GOG (Zork purchased from GOG)
+   # wine # windows emulator # use lutris to setup wine
+   # vulkan notes... order seem to matter... vulkaninfo got a segmemtation fault
+   # fixed via remove libvulkan1, install libvulkan1, install vulkan-tools lutris (weird)
+   # mesa-vulkan-drivers vulkan-amdgpu libvulkan1 vulkan-tools # vulkan graphics for amd
+   # libvulkan1:i386 mesa-vulkan-drivers:i386 amdgpu-lib32 # vulkan 32 bit for lutris
+   # wine32 libgnutls30 # lutris complaints
+   # libsdl2-net-2.0-0 # zork complaints
 
 	# INFOWARE
    aspell :sm: # spelling checker used by emacs flyspell and my dict
@@ -249,8 +258,8 @@ DoUntilKeypress "Checking packages" \
    pass :ex:mutt: # gnupg # gpg # mutt Gnu Privacy Guard conforming to OpenPGP
    isync :ex:mutt: # mutt imap mail synchronizer
    lynx :: # mutt/pandoc text mode web browser to display html
-   neomutt :ex:mutt: # text based mail user agent
-   notmuch :ex:mutt: # mutt email indexer
+   neomutt :mutt: # text based mail user agent
+   notmuch :mutt: # mutt email indexer
    mpack :ex:mutt: # munpack email.eml to extract inclusions and embedded images
    msmtp :ex:mutt: # mutt minimalist Simple Mail Transfer Protocol client
    recoil :ex:mutt: # mutt email searcher
@@ -376,9 +385,9 @@ DoUntilKeypress "Checking packages" \
    xclip :x11: # command line paste into clipboard
    xcolorsel :x.x11: # color grabber (find the button)
    # -xcompmgr :pi: # composition slows system (transparency, animation...) # sway requires compositer
-   xorg-dev :x11: # fix ffplay Could not initialize SDL : No available video device ?
+   # xorg-dev :x11: # fix ffplay Could not initialize SDL : No available video device ?
    xdotool :x11: # (x11) focus to deteramine current window
-   xinit :x11: # (x11) startx to start the x11 system and execute ~/.xinitrc
+   # xinit :x11: # (x11) startx to start the x11 system and execute ~/.xinitrc
    xinput :x11: # (x11) change mouse settings
 	# xserver-xorg-core # included # fundamental x11 system
 	# xserver-xorg-video-intel # included # video driver
@@ -418,5 +427,5 @@ CheckHostname
    #	&& ln -s $(realpath /etc/localtime) /etc/localtime # /usr/share/zoneinfo/America/"
 
 echo '$ startx/sway'
-# shellcheck source=./.bash_login.check
+# shellcheck source=./.bashrc
 . "$gHome/.bashrc"

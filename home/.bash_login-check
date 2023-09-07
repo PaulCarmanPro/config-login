@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 #
-# ~/.bash_login.check
+# ~/.bash_login-check
 # toolbox included by .bash_login
 #
 # shellcheck disable=SC2155 # Declare and assign separately to avoid masking return values
@@ -10,22 +10,32 @@
 : "$gUser" # expected to be exported
 
 # these variables only used inside these function declarations
-g0Base=$(basename -- "${BASH_SOURCE[0]}") # used in notifications and will be -bash during login
-gVarColor=$(tput setaf 3)
-gInTTY=$(tty) || gInTTY=/dev/null # do use 'not a tty'
-[[ -r "$gInTTY" ]] || gInTTY=/dev/null
-
-declare -r dErrColor1=$(tput setaf 1)
-declare -r dErrColor2=$(tput setaf 9)
+declare dColorVar=$(tput setaf 3)
+if tty --quiet \
+      && [[ -r "$(tty)" ]]; then
+   declare dTTY=$(tty)
+else
+   declare dTTY=/dev/null # do use 'not a tty'
+fi
 EchoErr() { # ERROR...
-	>&2 echo "$dErrColor1!!!$(tput sgr0) $g0Base:$dErrColor2 $*.$(tput sgr0)"
+   {
+      tput setaf 1
+      printf '!!!'
+      tput sgr0
+      printf '%s: ' "$(basename -- "${BASH_SOURCE[0]}")"
+      tput setaf 9
+      printf '%s\n' "$1"
+      [[ 1 -lt "$#" ]] \
+         && printf '%s\n' "${@:2}"
+      tput sgr0
+   } >&2
 }
 
 EchoLink() { # FROM [TO]
 	local zTo="${2-$(realpath "$1")}"
    local zDir1=$(dirname "$1")
    local zDir2=$(dirname "$zTo")
-	echo "${zDir1%/}/$gVarColor$(basename "$1")$(tput sgr0) -> ${zDir2%/}/$gVarColor$(basename "$zTo")$(tput sgr0)"
+	echo "${zDir1%/}/$dColorVar$(basename "$1")$(tput sgr0) -> ${zDir2%/}/$dColorVar$(basename "$zTo")$(tput sgr0)"
 }
 
 DoUntilKeypress() { # DESC command
@@ -33,7 +43,7 @@ DoUntilKeypress() { # DESC command
    $2 "${@:3}" < <(cat -) &
    local zPid=$!
    while kill -0 "$zPid" &>/dev/null; do
-      if KbdRead -s -t 0.1 < "${gInTTY:-/dev/stdin}"; then
+      if KbdRead -s -t 0.1 < "${dTTY:-/dev/null}"; then
          kill "$zPid" 
 			EchoErr "User Abort $2"
 			return 254
@@ -90,14 +100,14 @@ KbdRead() { # [-c # must be first] [-s # suppress output] [-t TIMEOUT] [any othe
 							REPLY+="$zData"
 							[[ '~' = "$zData" ]] && return
 						done ;;
-					*)  >&2 echo "!!! Unknown keyboard escape sequence \1b[$zData" && return 2
+					*)  >&2 echo "!!! Unknown keyboard escape sequence \\1b[$zData" && return 2
 				esac ;;
 			O) # PF Key should be P-S
 				local zData
 				read "$@" -r -N1 -t 0.001 zData \
-					|| ( >&2 echo "!!! Unterminated keyboard escape sequence (nothing after \1bO)" && return 2)
+					|| ( >&2 echo "!!! Unterminated keyboard escape sequence (nothing after \\1bO)" && return 2)
 				REPLY+="$zData" ;;
-			*)  >&2 echo "!!! Unknown keyboard escape sequence \1b$zOpener" && return 2
+			*)  >&2 echo "!!! Unknown keyboard escape sequence \\1b$zOpener" && return 2
 		esac
 	fi
 }
@@ -115,11 +125,9 @@ CheckAlternatives() {
       [[ -e "$zWant" ]] || continue
 	   local zIs=$(readlink "$zAlts/$zLink")
 	   EchoLink "$zLink" "$zWant"
-	   if [[ "$zWant" != "$zIs" ]] \
-			   && IsRootTo "link $(basename "$zWant") to ${zLink@Q} instead of ${zIs@Q}"; then
-		   # update-alternatives --config "$zLink"
-         ln -sfT "$zWant" "$zAlts/$zLink"
-	   fi
+	   [[ "$zWant" != "$zIs" ]] \
+			&& IsRootTo "link $(basename "$zWant") to ${zLink@Q} instead of ${zIs@Q}" \
+         && ln -sfT "$zWant" "$zAlts/$zLink" # update-alternatives --config "$zLink"
    done <<-EOF
 x-www-browser /usr/bin/firefox-esr
 x-cursor-theme /etc/X11/cursors/crystalblue.theme
@@ -198,8 +206,9 @@ CheckBluetooth() { # configuration files in /etc/bluetooth
 	# [need to add account to the lp group if you wish to connect to a bluetooth tether.]
 	# good to rid the sap plugin because it creates insecurity and no longer used to amp a signal
 	# test will not sense a problem is bluetooth service is not started
-	if systemctl status bluetooth.service | grep -q "Sap driver initialization failed." \
-			&& IsRootTo "to disable Bluetooth SIM Access Profile"; then
+	if systemctl status bluetooth.service \
+         | grep -q "Sap driver initialization failed." \
+			&& IsRootTo "disable Bluetooth SIM Access Profile"; then
 		# --noplugin=sap stops attempt to SIM Access Profile
 		# --compat also recommended
 		local zPattern='ExecStart=.*bluetoothd'
@@ -212,25 +221,13 @@ CheckBluetooth() { # configuration files in /etc/bluetooth
 		sudo systemctl daemon-reload
 		sudo systemctl restart bluetooth
 	fi
-	# attempt to eliminate boot message "rtk_btusb: This is not 8723a, use new patch style!" did NOT work
-	#   download/install version B Bluetooth dongle drivers (Realtek is being slow about Linux 5.8 changes)
-	#   local zBase='https://raw.githubusercontent.com/Realtek-OpenSource/android_hardware_realtek/rtk1395/bt/rtkbt/Firmware/BT'
-	#   sudo wget -o /lib/rtl8761b_config.bin "$zBase/rtl8761b_config"
-	#   sudo wget -o /lib/rtl8761b_fw.bin "$zBase/rtl8761b_fw"
-	#   also copy to /usr/lib if necessary (seem to be duplicates -- but did not help)
-	#     /lib/ system resources (may be a link to /usr/lib/)
-	#     /usr/lib/ system resources needed by users
-	#     /var resources specific to local system
-	#     /var/lib/ possibly mutable system resources needed by users
-	#   sudo cp /lib/rtl8761b_config.bin /usr/lib/rtl8761b_config.bin
-	#   sudo cp /librtl8761b_fw.bin /usr/lib/rtl8761b_fw.bin
 }
 
 CheckColor() {
    if ! hash dircolors; then
 	   EchoErr "Could not hash dircolors."
    else
-	   local zColors="$g0Dir/.bash_login.LS_COLORS"
+	   local zColors="$g0Dir/.bash_login-LS_COLORS"
       if [  -r "$zColors" ]; then
 		   eval "$(dircolors "$zColors")"
 	   else
@@ -256,7 +253,8 @@ CheckColor() {
    echo
 }
 
-CheckDbus() {
+CheckDbus() { # dunst connection
+   return # this routine does not resolve problem nor is it called by .bash_login
    # Dbus services in /usr/share/dbus-1/services/ are (re)started automatically.
    local zDustService=org.knopwob.dunst
    local zRootServices='/usr/share/dbus-1/services'
@@ -266,6 +264,7 @@ CheckDbus() {
    mkdir -p "$zUserServices"
    local zStandardService='org.freedesktop.Notifications'
    local zWantedService="${SERVICE:-$zStandardService}"
+   # !!! use IsRootTo
    sudo ln -sfT \
       "$zRootServices/$zWantedService.service" \
       "$zUserServices/zStandardService.service"
@@ -283,6 +282,7 @@ CheckDirsFstab() {
 				&& zDidMkdir=t
 		fi
 		# ignore group us if not created yet
+      # !!! fat has no permissions and must be assigned during mount !!!
 		if [[ -e "$zMount" ]] && getent group us &>/dev/null; then
 			if [[ root:us:775 != $(stat "$zMount" --format='%U:%G:%a') ]]; then
 				IsRootTo "allow full user access to ${zMount@Q}" \
@@ -294,61 +294,108 @@ CheckDirsFstab() {
    [[ -n "$zDidMkdir" ]] && [[ 0 = $(id -u) ]] && mount -a
 }
 
+CheckDirUnwanted() { # OLD NEW
+   # private for CheckDirsUnwanted
+   local zOld="$gHome/$1"
+   [[ -d "$zOld" ]] || return 0
+	if [[ "$(find "$zOld" -maxdepth 0 ! -empty 2>/dev/null)" ]]; then
+      if [[ "$2" && -e "/$2" ]]; then
+         mv -iv "$zOld/"* "/$2"
+      elif [[ "$2" && -e "$gHome/$2" ]]; then
+         mv -iv "$zOld/"* "$gHome/$2"
+      else
+         EchoErr "No place to put files in $gHome/$1"
+         zRemains+=("$1")
+         return
+      fi
+   fi
+	rmdir -v "zOld" \
+      && zDidRemove+=("$1")
+}
+
 CheckDirsUnwanted() {
    # CheckDirsWanted must be called first to ensure existence of replacement folders 
-   [[ root = "$gUser" ]] && return 0
    # remove ignorant home directories
-   unset zDidRemove
-	local zDir
-   for zDir in Bookshelf Desktop Documents Downloads Music Pictures Public Templates Videos; do
-      if [[ -d "$zDir" ]]; then
-			if [[ -z "$(find "$gHome/$zDir" -maxdepth 0 -empty 2>/dev/null)" ]]; then
-				case "$zDir" in
-               Bookshelf) mv -iv "$gHome/$zDir/"* "$gHome/0/" ;;
-					Desktop) EchoErr "Consider removing desktop files." ;;
-					Documents) mv -iv "$gHome/$zDir/"* "$gHome/1/" ;;
-					Downloads) mv -iv "$gHome/$zDir/"* "$gHome/8/" ;;
-					Music) mv -iv "$gHome/$zDir/"* "$gHome/3/" ;;
-					Pictures) mv -iv "$gHome/$zDir/"* "$gHome/2/" ;;
-					Public) EchoErr "Public directory replacement not yet available." ;;
-					Templates) mv -iv "$gHome/$zDir/"* "$gHome/1/" ;;
-					Videos) mv -iv "$gHome/$zDir/"* "$gHome/4/" ;;
-				esac
-			fi
-			rmdir -v "$gHome/$zDir" && zDidRemove=x
-		fi
-   done
-   [[ -n "$zDidRemove" ]] \
-      && EchoErr "Update .config/user-dirs.dirs if unwanted directories keep reappearing"
+   local -a zDidRemove zRemains
+   CheckDirUnwanted Bookshelf 0
+	CheckDirUnwanted Desktop
+	CheckDirUnwanted Documents 1
+   CheckDirUnwanted Downloads 8
+	CheckDirUnwanted Music 3
+	CheckDirUnwanted Pictures 2
+	CheckDirUnwanted Public 7
+	CheckDirUnwanted Templates 1
+	CheckDirUnwanted Videos 4
+   local zAutostart="/etc/xdg/autostart/xdg-user-dirs.desktop"
+   local zConfig="$gHome.config/user-dirs.dirs"
+   if [[ -z "$zRemains" ]]; then
+      [[ -e "$zAutostart" ]] \
+         && IsRootTo "Remove autocreation of xdg directories from $zAutostart" \
+         && rm "$zAutostart" \
+         && rm -f "$zConfig"
+   fi
+   if [[ -e "$zConfig" && "$zDidRemove" ]]; then
+      if [[ -e "$zAutostart" ]]; then
+         EchoErr "Update .config/user-dirs.dirs if unwanted directories reappear (@see $zAutostart)"
+      else
+         rm "$zConfig"
+      fi
+   fi
 }
 
 CheckDirsWanted() {
-   LinkTo() { # LINK DEST
-      if [[ -e "$1" ]]; then
-         local zDest=$(realpath "$1")
-         [[ "$(realpath "$2")" = "$zDest" ]] && return
-         if [[ -h "$1" ]]; then
-            EchoErr "${1@Q} links to ${zDest@Q} instead of ${1@Q}"
+   # wanted directories changed many times
+   # once upon a time, all were mounted via fstab into home directory
+   # now all in / and nothing in home and only 4 is mounted externally
+   Link() { # [-q] TARGET LINK
+      local zQuiet
+      [[ '-q' = "$1" ]] && zQuiet=q && shift
+      local zTarget="$1"
+      local zLink="$2"
+      if [[ ! -e "$zTarget" ]]; then
+            [[ "$zQuiet" ]] \
+               || EchoErr "Target for ${zLink@Q} not at ${zTarget@Q}"
+            return 1
+      fi
+      if [[ -e "$zLink" ]]; then
+         local zDest=$(realpath "$zLink")
+         [[ "$(realpath "$zTarget")" = "$zDest" ]] && return
+         if [[ -h "$zLink" ]]; then
+            [[ "$zQuiet" ]] \
+               || EchoErr "${zLink@Q} links to ${zDest@Q} instead of ${zLink@Q}"
+            return 1
          else
-            EchoErr "Physical at ${1@Q} and ${2@Q}"
+            [[ "$zQuiet" ]] \
+               || EchoErr "Physical at ${zLink@Q} stopping link to ${zTarget@Q}"
+            return 1
          fi
       else
-         if [[ -w "$(dirname "$1")" ]]; then
-            ln -sT "$2" "$1" \
-               || EchoErr "Could not link from ${1@Q} to ${2@Q}"
-         elif IsRootTo "create link from ${1@Q} to ${2@Q}"; then
-            sudo ln -sT "$2" "$1" \
-               || EchoErr "Could not link from ${1@Q} to ${2@Q}"
+         if [[ -w "$(dirname "$zLink")" ]]; then
+            if ! ln -sT "$zTarget" "$zLink"; then
+               [[ "$zQuiet" ]] \
+                  || EchoErr "Could create user link at ${zLink@Q} to ${zTarget@Q}"
+               return 1
+            fi
+         elif IsRootTo "create link from ${zLink@Q} to ${zTarget@Q}"; then
+            if sudo ln -sT "$zTarget" "$zLink"; then
+               [[ "$zQuiet" ]] \
+                  || EchoErr "Could not create root link at ${zLink@Q} to ${zTarget@Q}"
+               return 1
+            fi
          fi
       fi
+      return 0
    }
-   # not good to store common executables externally
-	# /9 should be link to $gHome/.local/bin which should be in $PATH
-   LinkTo "/9" "$gHome/.local/bin"
+   # best to store common executables locally (availability and speed)
+	# /9 should link to $gHome/.local/bin which should be in $PATH
+   Link "$gHome/.local/bin" "/9"
 	for zDir in {0..9}; do
-      # do not want to require external mounts anymore
-      ln -fsT "/$zDir" "$gHome/$zDir" \
-         || EchoErr "Could not link $gHome/$zDir to /$zDir"
+      if [[ -e "/$zDir" ]]; then
+         Link "/$zDir" "$gHome/$zDir"
+      elif [[ ! -e "$gHome/$zDir" ]]; then
+         IsRootTo -n "Create directory $gHome/$zDir" \
+            && mkdir "$gHome/$zDir"
+      fi
 	done
 }
 
@@ -382,7 +429,7 @@ CheckDNS() {
          && echo 'make_resolv_conf() { :; }' > "$zProtect" \
          && chmod 755 "$zProtect" # leave the file alone
    else
-      printf '%s\n' "DNS Server: $gVarColor$zServer$(tput sgr0)"
+      printf '%s\n' "DNS Server: $dColorVar$zServer$(tput sgr0)"
    fi
    return
    # -- OLD -- configure dhclient to hopefully keep wanted settings
@@ -442,7 +489,7 @@ CheckEvince() { # evince no longer used since mupdf
 			# but file will has ungly unique extension if X not inited.
 		fi
 	fi
-   echo "Evince cache size: $gVarColor$zSize$(tput sgr0)K"
+   echo "Evince cache size: $dColorVar$zSize$(tput sgr0)K"
 }
 
 CheckFile() { # IS-ROOT-TO FILE-NAME FILE-CONTENTS
@@ -452,6 +499,17 @@ CheckFile() { # IS-ROOT-TO FILE-NAME FILE-CONTENTS
 }
 
 CheckGeoclue() {
+   local zInstalled=$(apt-cache policy geoclue-* | grep -B1 'Installed: [0-9]' | sed -n 's/:$//p')
+   [[ "$zInstalled" ]] || return
+   zInstalled="$(tr '\n' ' ' <(printf '%s' "$zInstalled"))"
+   IsRootTo "purge location packages $zInstalled" \
+      && apt-get -y purge "geoclue*"
+   return
+   # remove geoclue auto-startup (trust any demos lately?)
+   local zAutostart="/etc/xdg/autostart/geoclue-demo-agent.desktop"
+   [[ -e "$zAutostart" ]] \
+      && IsRootTo "Remove geoclue demo autostart" \
+      && rm "$zAutostart"
 	# ensure that geolocation services are disabled 
 	local zStatus
 	zStatus=$(systemctl status geoclue.service 2>/dev/null)
@@ -541,7 +599,7 @@ CheckGroups() { # < GROUPS
          adduser "$gUser" "$zGroupName"
       fi
    done
-   echo "$gUser groups: $gVarColor$(groups "$gUser")$(tput sgr0)"
+   echo "$gUser groups: $dColorVar$(groups "$gUser")$(tput sgr0)"
 }
 
 CheckHostname() {
@@ -736,16 +794,16 @@ CheckPackages() { # COLON_SEPARATED_MUST_lIST COLON_SEPARATED_MUST_NOT_LIST < PA
 		else
 			printf "Installing %s..." "$zNeeds"
 			# shellcheck disable=SC2086 # Double quote to prevent globbing and word splitting
-			apt-get -y install ${zChecks[1]} < "${gInTTY:-/dev/stdin}"
+			apt-get -y install ${zChecks[1]} < "${dTTY:-/dev/stdin}"
 		fi
 	fi
    if [[ "${zChecks[2]}" ]]; then
 		if [[ "$zCant" ]]; then
-			[[ "${zChecks[2]}" ]] && EchoErr "$zCant: Skipping update of ${zChecks[2]}"
+			[[ "${zChecks[2]}" ]] && EchoErr "$zCant: Skipping upgrade of ${zChecks[2]}"
 		else
 			printf "Updating %s..." "$zNeeds"
 			# shellcheck disable=SC2086 # Double quote to prevent globbing and word splitting
-			apt-get -y update ${zChecks[2]} < "${gInTTY:-/dev/stdin}"
+			apt-get -y upgrade ${zChecks[2]} < "${dTTY:-/dev/stdin}"
 		fi
 	fi
    if [[ "${zChecks[6]}${zChecks[7]}" ]]; then
@@ -776,7 +834,7 @@ CheckPath() {
    # standard install removed from .profile, .bash_login, and .bashrc
    [[ -r "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
    export PATH
-   echo "PATH=$gVarColor$PATH$(tput sgr0)"
+   echo "PATH=$dColorVar$PATH$(tput sgr0)"
 }
 
 CheckPrinter() {
