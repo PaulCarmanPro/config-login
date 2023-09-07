@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+#shellcheck disable=SC2155 # declare assign in different steps
+
+# @see https://gitlab.freedesktop.org/pipewire/pipewire/-/wikis/Migrate-PulseAudio#sinksource-port-volumemuteport-latency
+
+set -f
+shopt -s extglob
+
+dBase=$(basename "${BASH_SOURCE[0]}")
+dDir=$(dirname "${BASH_SOURCE[0]}")
+dIcon="$dDir/volume.jpeg"
+dMax=200 # Maximum volume
+
+#
+## User Output
+#
+
+Error() { # [CODE] ERROR DETAILS...
+   local zCode
+   if [[ "$1" =~ [0-9]+ ]]; then
+      zCode="$1"
+      shift
+   fi
+   Notify ! critical "$(printf '%s\n' "${1:-Error}" "${@:2}")"
+   [[ 0 -ne "${zCode:-0}" ]] && exit "$zCode"
+}
+
+Notify() { # SHORT_COMMAND_REPRESENTATION URGENCY MESSAGE
+   local zRep
+   [[ 1 -eq "${#1}" ]] \
+      && zRep="$1$1$1" \
+         || zRep="$1"
+	notify-send --app-name="${BASH_SOURCE[0]}" \
+               --category=volume \
+               --expire-time=1600 \
+               --icon="$dIcon" \
+               --replace-id=250 \
+               --urgency="${2:-normal}" \
+               -- "$zRep $dBase $zRep" "$3" & # no allow notify-send to hang self
+}
+
+NotifyVolume() { # SHORT_COMMAND_REPRESENTATION
+	# post volume change notification
+   local zDesc zMessage
+   local zVolume=$(GetVolume source)
+   if [[ '100' != "$zVolume" ]]; then
+      zDesc=$(GetDesc source)
+      zMessage+=$(printf '<b>%s</b> Source = <b>%s%%</b>\n' \
+                         "${zDesc^}" "$zVolume")
+   fi
+   zDesc=$(GetDesc sink)
+   zVolume=$(GetVolume sink)
+   [[ "$zMessage" ]] && zMessage+=$'\n'
+   zMessage+=$(printf '<b>%s</b> Sink = <b>%s%%</b>\n' \
+						    "${zDesc^}" "$zVolume")
+   Notify "$1" "normal" "$zMessage"
+}
+
+#
+## Get/Set Routines
+#
+
+GetDesc() { # sink|source
+   GetName "$1" \
+      | sed -E 's/^[^.]*\.[^-]*-([^[:alpha:]][^.]*.)*([^-]*).*/\2/'
+}
+
+GetName() { # sink|source
+   pactl "get-default-$1" \
+      || Error 1 "Could not get $1 name"
+}
+
+GetNext() { # sink|source [DELTA] # DELTA default 1 (next)
+   local zSs=$(pactl list "$1"s short | cut -f2)
+   local zCount=$(wc -l <<< "$zSs")
+   local zDefault=$(pactl get-default-"$1")
+   local zIndex=$(grep -Fnx "$zDefault" <<< "$zSs" | cut -d: -f1)
+   zNext=$((zIndex + ${2:-1} - 1))
+   zNext=$((zNext % zCount))
+   [[ 0 -gt "$zNext" ]] && zNext=$((zNext + zCount))
+   sed -n $((zNext+1))p <<< "$zSs"
+}
+
+GetVolume() { # source|sink # return volume as an integer percentage
+   local zName=$(GetName "$1")
+   local zVolume=$(pactl "get-$1-volume" "$zName")
+   if [[ "$zVolume" =~ ([0-9]+)% ]]; then
+      echo "${BASH_REMATCH[1]}"
+   else
+      Error 1 "Could not obtain ${1@Q} volume"
+   fi
+}
+
+SetVolume() { # sink|source VOLUME|DELTA
+   # deliberately stop at 100%
+   # do not allow to pass $dMax
+   local zError
+   local zName=$(GetName "$1")
+   local zWas=$(GetVolume "$1")
+   zError=$(pactl "set-$1-volume" "$zName" "$2" 2>&1) \
+      || Error 1 "$zError" "Could not set $1 volume to $2"
+   local zNew=$(GetVolume "$1")
+   if [[ "$dMax" -lt "$zNew" ]]; then
+      zError=$(pactl "set-$1-volume" "$zName" "$dMax%" 2>&1) \
+         || Error 1 "$zError" "Could not set $1 volume to $dMax"
+   elif [[ 100 -gt "$zWas" && 100 -lt "$zNew" ]] \
+           || [[ 100 -lt "$zWas" && 100 -gt "$zNew" ]]; then
+      zError=$(pactl "set-$1-volume" "$zName" 100% 2>&1) \
+         || Error 1 "$zError" "Could not set $1 volume to 100%"
+   fi
+}
+
+#
+## Main Routines
+#
+
+DeltaVolume() { # +|-[DELTA]
+   # try to keep source volume at 100%
+	local DELTA='1db'
+	local zDelta=${1:1}; : "${zDelta:=$DELTA}"
+   local zSource=$(GetVolume source)
+	case "${1:0:1}" in
+		-) if [[ 100 -lt "$zSource" ]]; then
+            SetVolume source "-$zDelta"
+         else
+            SetVolume sink "-$zDelta"
+         fi
+			;;
+		+) if [[ 100 -gt "$zSource" ]] \
+               || [[ "$dMax" -le "$(GetVolume sink)" ]]; then
+            SetVolume source "+$zDelta"
+         else
+            SetVolume sink "+$zDelta"
+         fi
+			 ;;
+		*) Error 1 "Expecting option +|-[volume[%|db]] but found ${1@Q}"
+   esac
+}
+
+if [[ 0 != "$#" ]] \
+      || [[ "$0" = "$dBase" ]]; then # not an include (testing)
+
+   case "$1" in
+      [+-]*) DeltaVolume "$1" ;;
+      \>) pactl set-default-sink "$(GetNext sink)" ;;
+      \<) pactl set-default-sink "$(GetNext sink -1)" ;;
+      '') ;;
+      *) Error 1 "Unknown argument $1"
+   esac
+   # notify-send gets lost when given many quick notifications
+   NotifyVolume "$1" &
+   declare z="$!"
+   timeout 0.5s bash -c wait $z
+   [[ 124 = "$?" ]] \
+      && while pkill dunst; do sleep 0.01s; done # avoid lockup
+fi

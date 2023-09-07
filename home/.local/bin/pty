@@ -1,0 +1,85 @@
+#!/usr/bin/env python
+
+# emulate a terminal when there isn't one.
+# inserts carriage return (0x0d) before each newline (0x0a).
+# send output through tr -d '\r'
+# pty command [arg1 arg2 ...]
+# Doesn't require permissions or monkey-patching shared libraries.
+
+# used by ~/.bashrc.alias ncal()
+
+from sys import argv
+import os
+import signal
+
+# Python's File objects have problems at this low a level, so use integers to specify files.
+stdin = 0
+stdout = 1
+stderr = 2
+# Include if passing to fish to prevent expansions.
+#import re
+#def fish_escape(args):
+#    def escape_one(arg):
+#        return "'" + re.sub(r"('|\\)", r'\\\1', arg) + "'"
+#    escaped_args = map(escape_one, args)
+#    return ' '.join(escaped_args)
+
+if len(argv) < 2:
+    os.write(stderr,
+b"""A tragically beautiful piece of hackery, made to fool programs like ls,
+grep, rg, and fd into thinking they're actually connected to a terminal.
+Its usage:
+
+pty command [arg1 arg2 ...]
+
+Examples:
+pty ls --color -R | less -r
+git log -p | pty rg <search terms> | less -r
+""")
+    exit(255)
+
+# No forkpty here because it blocks ^Cs from reaching child process.
+ptyIn, ptyOut = os.openpty()
+pid = os.fork()
+if pid == 0:
+    # The child runs this.
+    # Replace the process's stdout with ptyOut.
+    os.dup2(ptyOut, stdout)
+    # Unlike a subprocess.call(), this replaces the entire child
+    # process with argv[1:], meaning execvp will not return!
+    # Web search "fork exec" for more.
+    os.execvp(argv[1], argv[1:])
+    # Use this if calling fish.
+    #os.execvp('fish', ['fish', '-c', fish_escape(argv[1:])])
+
+# The parent runs this.
+
+# Parent must close ptyOut or the script won't exit.
+# ptyIn read after the child process terminates hang
+# forever because ptyOut would technically still be open.
+os.close(ptyOut)
+
+# Whole process group gets SIGINT, including the child.
+# We don't react to SIGINT. We judge what the child does.
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+while True:
+    try:
+        chunk = os.read(ptyIn, 4096)
+    except OSError:
+        break
+    try:
+        os.write(stdout, chunk)
+    except BrokenPipeError:
+        # Happens piping output to another process in a pipeline
+        # like in `pty ls --color -R | less -r`, and the receiving
+        # process is terminated before the child has exited.
+        # Happens when user quits less before it displayed all output.
+        # So, we need to stop the child process now.
+        os.kill(pid, signal.SIGTERM)
+        # Close the child's inputs and outputs, just in case it is
+        # blocking on them and can't react to the SIGTERM as a result.
+        os.close(ptyIn)
+        break
+wait_pid, status = os.waitpid(pid, 0)
+exit(status >> 8)

@@ -1,0 +1,10 @@
+#!/bin/bash
+
+if [[ "$WAYLAND_DISPLAY" ]]; then
+   focus-wayland "$@"
+elif [[ "$DISPLAY" ]]; then
+   focus-x "$@"
+else
+   >&2 echo "!!! $(basename "$0"): Could not identify the current graphical display manager"
+   exit 1
+fi
